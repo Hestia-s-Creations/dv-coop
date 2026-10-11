@@ -99,6 +99,16 @@ can reach the Steam client; this path has not yet been run against the real game
 px away (default 60,000, out of range). Note `savegame-c.dv` holds a stranded ship the game immediately rescues
 to Enceladus, so C defaults to the main save.
 
+## Sandbox (Linux, no Steam)
+
+`tools/sandbox.sh [count]` runs 2 to 5 instances in a private headless display (`:99`, an Xvnc on a 0600 Unix socket,
+no TCP port) from a hard-linked copy of the game with its own `mods/`. Each instance has its own `HOME` and
+`XDG_DATA_HOME`, so SteamAPI finds no client: no Steam Cloud sync, no effect on a running Steam, and saves stay in
+`~/.local/share/dvcoop-sandbox/data/<k>/`. Instance 1 is the ENet server; instance k dives (k-1) x 5,000 px off.
+`tools/sandbox.sh stop` ends them. Screenshot with
+`ffmpeg -loglevel error -y -f x11grab -video_size 1600x900 -i :99 -frames:v 1 shot.png`.
+Without a GPU the game renders on the CPU (llvmpipe, about 10 fps), which is enough for the net code.
+
 ## Logs
 
 `%APPDATA%\dV\logs\dv_log_N.txt` on Windows, `$XDG_DATA_HOME/dV/logs/dv_log_N.txt` on Linux (newest by mtime). All mod lines are prefixed `COOP:`.

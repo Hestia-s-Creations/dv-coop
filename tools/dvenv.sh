@@ -23,7 +23,8 @@ if [ -z "$DV_GAME" ]; then
 fi
 [ -d "$DV_GAME" ] || { echo "game folder not found; set DV_GAME" >&2; exit 1; }
 
-# Flatpak Steam: the game has to run inside the Steam sandbox to reach the Steam client.
+# Flatpak Steam: the game has to run inside the running Steam client's own sandbox. A separate
+# `flatpak run` sandbox can't see the client; SteamAPI fails with a fatal assert and has crashed Steam.
 case "$DV_GAME" in "$FLATPAK_STEAM"/*) DV_FLATPAK=1 ;; *) DV_FLATPAK= ;; esac
 
 if [ "$DV_OS" = windows ]; then
@@ -34,8 +35,8 @@ else
   DV_EXE="$(find "$DV_GAME" -maxdepth 1 -type f -name 'Delta-V*' ! -name '*.pck' ! -name '*.exe' | head -1)"
   [ -x "$DV_EXE" ] || { echo "no Linux Delta-V binary in $DV_GAME" >&2; exit 1; }
   if [ -z "$DV_DATA" ]; then
-    # user:// is $XDG_DATA_HOME/dV; under Flatpak that is one of the first two
-    for d in "$FLATPAK_STEAM/data" "$FLATPAK_STEAM/.local/share" "$HOME/.local/share"; do
+    # user:// is $XDG_DATA_HOME/dV; games started by Flatpak Steam use the first one
+    for d in "$FLATPAK_STEAM/.local/share" "$FLATPAK_STEAM/data" "$HOME/.local/share"; do
       [ -d "$d/dV" ] && DV_DATA="$d" && break
     done
   fi
@@ -56,6 +57,15 @@ dv_clear_logs() {
   for r in "$@"; do rm -f "$r/dV/logs"/dv_log_*.txt "$r/dV/logs/engine_log.txt"; done
 }
 
+# dv_steam_instance: instance id of the Flatpak sandbox running the Steam client itself
+# (Steam also starts helper sandboxes for its runtime and web helper; those don't count)
+dv_steam_instance() {
+  flatpak ps --columns=instance,child-pid,application | while read -r i c a; do
+    [ "$a" = com.valvesoftware.Steam ] || continue
+    case "$(ps -o args= -p "$c")" in *" -- steam"*) echo "$i"; break ;; esac
+  done
+}
+
 # dv_launch <data root, or "" for the main one> <game args...>: start one instance in the background
 dv_launch() {
   local root="$1"; shift
@@ -67,7 +77,12 @@ dv_launch() {
       ( "$DV_EXE" "$@" >/dev/null 2>&1 & )
     fi
   elif [ -n "$DV_FLATPAK" ]; then
-    ( flatpak run --env=XDG_DATA_HOME="${root:-$DV_DATA}" --command="$DV_EXE" com.valvesoftware.Steam "$@" >/dev/null 2>&1 & )
+    local inst; inst="$(dv_steam_instance)"
+    [ -n "$inst" ] || { echo "Flatpak Steam is not running; start it and log in first" >&2; exit 1; }
+    # flatpak enter starts with an almost empty environment, so pass what the game and SteamAPI need
+    ( flatpak enter "$inst" env HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DISPLAY="$DISPLAY" \
+        XDG_DATA_HOME="${root:-$DV_DATA}" sh -c 'cd "$1" && shift && exec "$@"' sh "$DV_GAME" "$DV_EXE" "$@" \
+        >/dev/null 2>&1 & )
   else
     ( XDG_DATA_HOME="${root:-$DV_DATA}" "$DV_EXE" "$@" >/dev/null 2>&1 & )
   fi
