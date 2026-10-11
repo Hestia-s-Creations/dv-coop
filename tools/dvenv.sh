@@ -1,0 +1,75 @@
+# Sourced by dev2.sh / dev3.sh. Finds the game and its user data on Windows (Git Bash) or Linux,
+# and starts instances with their own user data dir.
+#   DV_GAME  game folder (holds the Delta-V binary and mods/)
+#   DV_DATA  folder that holds dV/ for the main instance (%APPDATA% on Windows)
+#   DV_INST  where the extra instances' data dirs go
+
+FLATPAK_STEAM="$HOME/.var/app/com.valvesoftware.Steam"
+GAME_DIR="dV Rings of Saturn"
+
+DV_PY=python; command -v python >/dev/null || DV_PY=python3
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) DV_OS=windows ;;
+  *)                    DV_OS=linux ;;
+esac
+
+if [ -z "$DV_GAME" ]; then
+  for d in "/c/Program Files (x86)/Steam/steamapps/common/$GAME_DIR" \
+           "$FLATPAK_STEAM/.local/share/Steam/steamapps/common/$GAME_DIR" \
+           "$HOME/.local/share/Steam/steamapps/common/$GAME_DIR"; do
+    [ -d "$d" ] && DV_GAME="$d" && break
+  done
+fi
+[ -d "$DV_GAME" ] || { echo "game folder not found; set DV_GAME" >&2; exit 1; }
+
+# Flatpak Steam: the game has to run inside the Steam sandbox to reach the Steam client.
+case "$DV_GAME" in "$FLATPAK_STEAM"/*) DV_FLATPAK=1 ;; *) DV_FLATPAK= ;; esac
+
+if [ "$DV_OS" = windows ]; then
+  DV_EXE="$DV_GAME/Delta-V.exe"
+  DV_DATA="${DV_DATA:-$APPDATA}"
+  DV_INST="${DV_INST:-$HOME/AppData/Local/Temp}"
+else
+  DV_EXE="$(find "$DV_GAME" -maxdepth 1 -type f -name 'Delta-V*' ! -name '*.pck' ! -name '*.exe' | head -1)"
+  [ -x "$DV_EXE" ] || { echo "no Linux Delta-V binary in $DV_GAME" >&2; exit 1; }
+  if [ -z "$DV_DATA" ]; then
+    # user:// is $XDG_DATA_HOME/dV; under Flatpak that is one of the first two
+    for d in "$FLATPAK_STEAM/data" "$FLATPAK_STEAM/.local/share" "$HOME/.local/share"; do
+      [ -d "$d/dV" ] && DV_DATA="$d" && break
+    done
+  fi
+  [ -d "$DV_DATA/dV" ] || { echo "no dV user data found; launch the game once through Steam, or set DV_DATA" >&2; exit 1; }
+  # under $FLATPAK_STEAM so the sandbox can see it (its /tmp is private)
+  DV_INST="${DV_INST:-${DV_FLATPAK:+$FLATPAK_STEAM/dvcoop}}"
+  DV_INST="${DV_INST:-/tmp}"
+fi
+
+# dv_seed <data root>: copy the main instance's saves and settings (not logs) into another data root
+dv_seed() {
+  mkdir -p "$1/dV"
+  for f in "$DV_DATA/dV"/*; do b=$(basename "$f"); [ "$b" = "logs" ] && continue; cp -r "$f" "$1/dV/"; done
+}
+
+# dv_clear_logs <data root>...
+dv_clear_logs() {
+  for r in "$@"; do rm -f "$r/dV/logs"/dv_log_*.txt "$r/dV/logs/engine_log.txt"; done
+}
+
+# dv_launch <data root, or "" for the main one> <game args...>: start one instance in the background
+dv_launch() {
+  local root="$1"; shift
+  cd "$DV_GAME"
+  if [ "$DV_OS" = windows ]; then
+    if [ -n "$root" ]; then
+      ( APPDATA="$(cygpath -w "$root")" "$DV_EXE" "$@" >/dev/null 2>&1 & )
+    else
+      ( "$DV_EXE" "$@" >/dev/null 2>&1 & )
+    fi
+  elif [ -n "$DV_FLATPAK" ]; then
+    ( flatpak run --env=XDG_DATA_HOME="${root:-$DV_DATA}" --command="$DV_EXE" com.valvesoftware.Steam "$@" >/dev/null 2>&1 & )
+  else
+    ( XDG_DATA_HOME="${root:-$DV_DATA}" "$DV_EXE" "$@" >/dev/null 2>&1 & )
+  fi
+  cd - >/dev/null
+}
