@@ -32,6 +32,7 @@ src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop
   ext/ship-ctrl.gd      extends res://ships/ship-ctrl.gd (netControlled mode, intent capture, correction)
   ui/FriendOverlay.gd   friend markers drawn from beacons
 tools/build.py          zips src/ -> build/dv-coop.zip and copies it into <game>/mods/
+tools/dvenv.sh          game, data and launcher paths for the dev loops (Windows Git Bash or Linux)
 reference/              decompiled game source (gitignored; regenerate with GDRE Tools, see below)
 ```
 
@@ -41,7 +42,12 @@ reference/              decompiled game source (gitignored; regenerate with GDRE
 python tools/build.py
 ```
 
-Copies `build/dv-coop.zip` into `C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn\mods\`.
+Copies `build/dv-coop.zip` into the game's `mods/` folder. The game folder is `DV_GAME` if set, otherwise the
+first one found of:
+
+- Windows: `C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn`
+- Linux, Flatpak Steam: `~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/dV Rings of Saturn`
+- Linux, native Steam: `~/.local/share/Steam/steamapps/common/dV Rings of Saturn`
 
 ## Run
 
@@ -71,7 +77,8 @@ Delta-V.exe --enable-mods --coop-enet-join=127.0.0.1:7777
 ```
 
 Two instances on one PC need separate user data dirs so saves and logs don't collide:
-launch the second with a different `APPDATA` (user data lives in `%APPDATA%\dV\`).
+launch the second with a different `APPDATA` on Windows (user data lives in `%APPDATA%\dV\`), or a different
+`XDG_DATA_HOME` on Linux (user data lives in `$XDG_DATA_HOME/dV/`).
 
 Add `--coop-selftest` to any launch to log a PASS/FAIL that the ship extension is active.
 
@@ -82,6 +89,11 @@ Dev flags:
 --coop-slot=savegame-b.dv  use another save slot (so host and guest fly different ships)
 ```
 
+Both dev scripts run on Windows (Git Bash) and Linux. They read `DV_GAME`, `DV_DATA` (the folder holding the main
+instance's `dV/`) and `DV_INST` (where the extra instances' data goes) and otherwise find them, see `tools/dvenv.sh`.
+With Flatpak Steam each instance is started inside the Steam sandbox (`flatpak run --command=<game binary>`) so it
+can reach the Steam client; this path has not yet been run against the real game.
+
 `tools/dev2.sh [guest-save]` does the whole two-instance loop: build, seed the guest data dir, launch both.
 `tools/dev3.sh [offset_c] [slot_b] [slot_c]` launches three: A (server), B 5,000 px away (in range), C `offset_c`
 px away (default 60,000, out of range). Note `savegame-c.dv` holds a stranded ship the game immediately rescues
@@ -89,14 +101,16 @@ to Enceladus, so C defaults to the main save.
 
 ## Logs
 
-`%APPDATA%\dV\logs\dv_log_N.txt` (newest by mtime). All mod lines are prefixed `COOP:`.
-Engine-level script errors go to `%APPDATA%\dV\logs\engine_log.txt`.
+`%APPDATA%\dV\logs\dv_log_N.txt` on Windows, `$XDG_DATA_HOME/dV/logs/dv_log_N.txt` on Linux (newest by mtime). All mod lines are prefixed `COOP:`.
+Engine-level script errors go to `engine_log.txt` in the same folder.
 
 ## Regenerating the reference source
 
 ```
 gdre_tools.exe --headless --recover="C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn\Delta-V.pck" --output=reference
 ```
+
+On Linux: `./gdre_tools.x86_64 --headless --recover=<path to Delta-V.pck> --output=reference`.
 
 GDRE Tools 2.7.1 recovers all 489 scripts in about five seconds. Re-run after every game update
 and diff against the previous recovery to see whether a hooked function changed.
