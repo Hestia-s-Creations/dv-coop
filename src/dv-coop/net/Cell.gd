@@ -31,6 +31,7 @@ const BEACON_EXTRAP_MAX = 2.0
 const SLIP_MARGIN = 150000.0   # authority slipstreams early once any member gets this close to the radius
 const WARP_DISTANCE = 20000.0
 const LOG_EVERY = 5.0
+const PEER_STALE = 6.0          # same as CoopNet.BEACON_TIMEOUT
 
 enum Role { SOLO, MEMBER, AUTHORITY }
 
@@ -162,7 +163,7 @@ func _peerPos(id, now):
 		return null
 	var pr = net.peers[id]
 	var b = pr.beacon
-	if b == null or now - pr.beaconAt > net.BEACON_TIMEOUT or b.get("zone") != "rings" or not b.has("p"):
+	if b == null or now - pr.beaconAt > PEER_STALE or b.get("zone") != "rings" or not b.has("p"):
 		return null
 	var pp = net._puppetOf(id)
 	if pp != null:

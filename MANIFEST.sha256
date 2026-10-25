@@ -10,7 +10,7 @@ b4b9ec6b2744d94a8debd32b2cfda8f81640265b76c55dbfbca67247f91b4fbc  docs/SPEC.md
 2c7cfdd5add7f9eca654f56a0bbad8e0579890dbebc4c23df30e647e3b7e144b  llms.txt
 139303781f8e9ab4603ed7dd09c67f26bb862eb439badc241ac6b20c022f93c7  src/dv-coop/ext/ship-ctrl.gd
 89966bc8ecebb08d2c42e99c31cdcd7cd324b69e3f17da38fb7e0f47f40e06d7  src/dv-coop/modmain.gd
-205b71dfa2b43ca9b4e556272f54ec1174d68791377b211803a9daef679cec0c  src/dv-coop/net/Cell.gd
+1dcd772f72ce64833a0557b1ca67e3ca306a02ca89f7c0cd8ae5569b984620a8  src/dv-coop/net/Cell.gd
 d3c1df9b5ba7e66af9d7010c56991c84dd8a56ea1d0f2f38f8e20880fc05e6d9  src/dv-coop/net/CoopNet.gd
 a43f69b44e2ef6174a1c38e0b69e70706b7a530d49bc100c9ce2b082e7f85977  src/dv-coop/net/RockSync.gd
 1a202d7e7e358b8890523234d7747677333ecbcb8f0bb3a8e6f6613221892dc0  src/dv-coop/ui/FriendOverlay.gd
