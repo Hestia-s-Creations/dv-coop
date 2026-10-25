@@ -20,6 +20,9 @@ SLOT_B="${2:-savegame-b.dv}"
 SLOT_C="${3:-savegame.dv}"
 WARP_C="${WARP_C:-25}"
 OFF_B="${OFF_B:-5000}"
+# DIVE_X, DIVE_Y move the whole formation off the dev target (e.g. into a denser part of the ring)
+DIVE_X="${DIVE_X:-0}"
+DIVE_Y="${DIVE_Y:-0}"
 WARP=(); [ "$WARP_C" != 0 ] && WARP=(--coop-warp-to-peer="$WARP_C")
 
 "$DV_PY" -I tools/build.py
@@ -31,11 +34,11 @@ dv_clear_logs "$DV_DATA" "$R" "$B" "$C"
 
 dv_launch "$R" --enable-mods --coop-enet-host=7777
 sleep 6
-dv_launch "" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive
+dv_launch "" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$DIVE_Y
 sleep 6
-dv_launch "$B" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=0,$OFF_B --coop-slot="$SLOT_B"
+dv_launch "$B" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_B)) --coop-slot="$SLOT_B"
 sleep 6
-dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=0,$OFF_C --coop-slot="$SLOT_C" "${WARP[@]}"
+dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_C)) --coop-slot="$SLOT_C" "${WARP[@]}"
 echo "launched R (relay), A, B (+$OFF_B), C (+$OFF_C, warp ${WARP_C}s). logs:"
 echo "  R: $R/dV/logs/dv_log_*.txt"
 echo "  A: $DV_DATA/dV/logs/dv_log_*.txt"
