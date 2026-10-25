@@ -29,6 +29,9 @@ const ROCK_PREFIX = "res://asteroids/"
 
 var net = null   # CoopNet
 
+signal rock_born(id, node)    # a rock entered the field on this machine (spawned here or built from a recipe)
+signal rock_gone(id, node)    # a rock is leaving the field (despawn, fracture, consumed, pruned)
+
 var field = null
 var counter = 0
 var bodies = {}      # id -> node, every body with a net id in the current field
@@ -107,6 +110,46 @@ func promoteToAuthority():
 	role = "authority"
 	Debug.l("COOP: RS promoted to authority, %d rocks now simulated here" % n)
 
+# ---------------------------------------------------------------- ownership hooks (M4, used by Own.gd)
+
+func nodeOf(id):
+	var n = bodies.get(id)
+	return n if n != null and is_instance_valid(n) else null
+
+func trackedState(id):
+	return tracked.get(id)
+
+# Member won a claim: its tracked copy becomes the simulated body, in place (never rebuilt).
+func untrack(id):
+	var t = tracked.get(id)
+	if t == null:
+		return null
+	tracked.erase(id)
+	if is_instance_valid(t.n):
+		t.n.remove_meta("dvnet_tracked")
+		return t.n
+	return null
+
+# A body this machine no longer owns: correct it toward its owner's stream from now on.
+func track(id, node, p, r, v, w):
+	if node == null or not is_instance_valid(node):
+		return
+	node.set_meta("dvnet_tracked", true)
+	tracked[id] = {"n": node, "p": p, "r": r, "v": v, "w": w, "at": OS.get_ticks_msec()}
+
+func updateTracked(id, p, r, v, w):
+	var t = tracked.get(id)
+	if t != null:
+		t.p = p
+		t.r = r
+		t.v = v
+		t.w = w
+		t.at = OS.get_ticks_msec()
+
+# Authority: does it currently stream this rock with r.u (i.e. no player owns it)?
+func isStreamed(id) -> bool:
+	return rocks.has(id) and not tracked.has(id)
+
 # ---------------------------------------------------------------- registry
 
 func _cell():
@@ -184,14 +227,18 @@ func _onChildEntered(node):
 		id = "%d:%d" % [net.myId, counter]
 		node.set_meta("dvnet", id)
 	bodies[id] = node
-	if isRock(node) and not node.has_meta("dvnet_tracked"):
-		rocks[id] = node
-		fresh.append(id)
+	if isRock(node):
+		emit_signal("rock_born", id, node)
+		if not node.has_meta("dvnet_tracked"):
+			rocks[id] = node
+			fresh.append(id)
 
 func _onChildExiting(node):
 	if not node.has_meta("dvnet"):
 		return
 	var id = node.get_meta("dvnet")
+	if isRock(node):
+		emit_signal("rock_gone", id, node)
 	bodies.erase(id)
 	tracked.erase(id)
 	if rocks.has(id):
@@ -420,6 +467,7 @@ func _authorityTick(delta, cell):
 			_sendUpdates(peer, rv, at, near, far, g)
 	fresh.clear()
 	gone.clear()
+	_correct()
 
 # Would this rock, built on the member's machine, sit inside or against that member's ship? Its ship is the puppet
 # here. Same shape query as the stock spawner's placement test, with a margin for the puppet's lag. A deferred rock
@@ -472,8 +520,8 @@ func _sendUpdates(peer, rv, at, near, far, g):
 	var f = PoolRealArray()
 	for id in rv.known:
 		var node = rocks.get(id)
-		if node == null:
-			continue
+		if node == null or node.has_meta("dvnet_tracked"):
+			continue   # gone, or owned by a player who streams it with o.u
 		var d = node.global_position.distance_to(at)
 		if not ((near and d < NEAR) or (far and d >= NEAR)):
 			continue
@@ -598,11 +646,16 @@ func _memberTick(delta, cell):
 			else:
 				_onSpawn(h[0], h[1])
 		replaying = false
+	_correct()
+
+# Pull every tracked copy toward its owner's last reported state. Members track the authority's rocks; the authority
+# tracks rocks a player owns (M4). A copy whose claim is pending here (Own sets `hold`) is left alone.
+func _correct():
 	var now = OS.get_ticks_msec()
 	for id in tracked:
 		var t = tracked[id]
 		var n = t.n
-		if not is_instance_valid(n):
+		if not is_instance_valid(n) or t.get("hold", false):
 			continue
 		var age = (now - t.at) / 1000.0
 		if age > MAX_EXTRAPOLATION:
