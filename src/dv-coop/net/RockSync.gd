@@ -451,8 +451,14 @@ func _out(peer, msg, reliable):
 
 # ---------------------------------------------------------------- member
 
+# A member holds the authority's rocks while its own ship is in the dive cutscene: the stock spawner keeps the
+# cutscene corridor clear, the authority's field doesn't, and the ship would plough through it at dive speed.
 func _ready_for(from, cell) -> bool:
-	return role == "member" and cell != null and cell.authority() == from
+	return role == "member" and cell != null and cell.authority() == from and not _inCutscene()
+
+func _inCutscene() -> bool:
+	var ship = net.localShip
+	return ship != null and is_instance_valid(ship) and ship.get("cutscene") == true
 
 func _onSpawn(from, msg):
 	var cell = _cell()
