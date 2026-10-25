@@ -55,6 +55,8 @@ generation) tag.
 | `o.new` | owner → authority | yes | recipes minted by the owner (`"<owner>:<n>"` ids) | bodies a player created: fracture shards of a rock it owns |
 | `d.ev` | shooter → owner | yes | list of `[id, epoch, kind, amount, point (rock-local), delta]`, batched per physics tick | weapon damage to a body the shooter doesn't own |
 | `o.list` | member → new authority | yes | ids this member owns, with `epoch` and state | rebuild the ownership table after a handoff |
+| `b.new` | shooter → all members | yes | bullet / blob id, `p`, `v`, `lingeringImpulse`, shooter | every machine runs a ballistic copy; its damage counts only on the hit rock's owner |
+| `s.die` | ship owner → all members | yes | ship (peer id), final `p r v w` | the owner's ship exploded; others play it and remove the puppet |
 
 The authority keeps streaming `r.u` for bodies it owns. A player-owned body is streamed by its owner with `o.u` to
 every member, including the authority. The authority stops sending `r.u` for that body while a player owns it. It
@@ -110,18 +112,29 @@ Rocks take damage through `applyEnergyDamage`, `applyKineticDamage`, `addIntegra
 destroyed by damage at all. The rule that avoids double counting is that **every hit is evaluated on exactly one
 machine**.
 
-- **The shooter evaluates weapon hits.** Callers: laser.gd :266-269 (raycast), emp.gd :244-247,
-  synchrotron.gd :128-133, projectile.gd :71 (bullets are shooter-owned bodies, per SPEC), sfx/thruster.gd :637
-  (torch / iron-thrower exhaust). On the shooter's machine:
+- **The shooter evaluates beam hits.** These are instant weapons: laser.gd :266-269 (raycast), emp.gd :244-247,
+  synchrotron.gd :128-133, and the thruster heat beam in sfx/thruster.gd :622-640. On the shooter's machine:
   - if the shooter owns the rock, the damage is applied;
   - otherwise only the effects play locally, and the hit is queued as `[id, epoch, kind, amount, point, delta]`.
     The queue is flushed once per physics tick as one `d.ev` per owner.
 
   The owner applies each event through the same stock function, so hardness, reflectivity and the `delta` scaling
   stay the game's.
+- **Bullets and iron-thrower blobs are replicated bodies, not forwarded hits.** A bullet's kinetic damage and its
+  push both come from contact (asteroid.gd `_integrate_forces`). projectile.gd :71 is only the thermal part, so
+  forwarding :71 would lose the kinetic share and the push.
+  - The shooter broadcasts each bullet's spawn: position, velocity, `lingeringImpulse`, shooter. Every machine runs a
+    ballistic copy.
+  - All of a bullet's damage on a rock (contact kinetic and :71 thermal) counts only on that rock's owner's machine.
+    Other machines play effects only.
+  - Iron-thrower blobs (sfx/thruster.gd :589 / :610 / :681) work the same way.
+- **Damage to a ship carries hostility.** When the target is a ship (a puppet on the shooter's machine), the `d.ev`
+  carries the stock hostility flag. The owner applies it, so faction reactions happen once, on the machine that owns
+  the target. Call sites: laser.gd :271, projectile.gd :83, synchrotron.gd :135, thruster.gd :639.
 - **A puppet's weapons do no damage locally.** Puppets replay the shooter's `fired` dict (M1), so the owner's copy
-  of the shooter's laser would hit the same rock a second time. Each weapon caller above gets a one-line guard: if
-  the weapon's ship is `netControlled`, play effects only.
+  of the shooter's laser would hit the same rock a second time. Each weapon caller above gets a guard: if the
+  weapon's ship is `netControlled`, play effects only. The same guard covers the synchrotron's storm-node spawn
+  (synchrotron.gd :149-156) and the thruster heat beam (:622-640).
 - **Contact damage stays local to the owner.** The rock's own `_integrate_forces` (asteroid.gd :331) calls
   `addIntegratedDamage` for ship hulls, claws, grinder blades and bullets touching it. It also covers the physical
   thruster plumes, which sfx/thruster.gd :658-681 spawns as short-lived RigidBody2Ds (tim-06's audit). The owner
@@ -133,6 +146,38 @@ machine**.
   fractures it with the stock code and the shards are born there; see "Shards".
 - MPU processing of an H2O asteroid is `applyEnergyDamage` (MineralProcessingUnit.gd :217). It acts on a rock the
   processing player owns, because the MPU touch claimed it, so it is applied locally, not forwarded.
+
+## Puppet systems
+
+A puppet is a full stock ship running on another player's machine. Every system that acts on the world has to be
+inert or effects-only there; otherwise the puppet would grab, push, repair or aim on its own, and the same action
+would happen twice. (The M3 ship-ctrl extension already makes puppets immune to kinetic, energy and EMP damage, holds
+`initialShockSupress` at 1.0, and blocks `vanish()`.)
+
+| System | Where | On a puppet |
+| --- | --- | --- |
+| Drone plant (haul / tug impulses on rocks, repair drones' `changeSystemDamage`) | weapons/drone-plant.gd :494-539 | No drone hits, no impulses, no repairs. The owner's drones are replicated bodies. |
+| Claw arm: queue, lock, pin joint | ships/modules/DockingArm.gd :645-667, :882 | No queueing, no lock, no joint. The arm's open/close state travels in `fired`, so its geometry matches the owner's. |
+| PDT / ACT turrets | ships/modules/PDT.gd :241-300 (self-aim) | No self-aim. The owner streams pivot angle and fire state instead. |
+| Cargo hold, MPU | see "Ore accounting" | Never counts or processes. |
+| Weapons | see "Damage" | Effects only. |
+
+**Target filter.** DockingArm.isValidTarget (:850-870) must exclude puppets and other players' drone ships, so a
+claw never locks onto another player.
+
+## Ship death
+
+Puppets can't `vanish()` locally any more, so a ship's death is an event from its owner: the owner sends "ship
+exploded" when its stock `vanish()` runs, and every other machine plays the explosion and removes the puppet. The
+reactor blast spawns about 128 physical bodies (Reactor.gd :256-267). They are simulated on the machine that owns the
+rocks they hit, the cell authority by default, so their push on rocks happens once.
+
+## Mirrors beyond rocks
+
+Bodies other than rocks and minerals (HugeRock and moonlets, DestroyedHabitat, PhageTheta, NPC ships) get the same
+mirror treatment through one inert flag, set before `add_child` and checked at the 8 sites in tim-06's audit. Mirrors
+carry the authority's transponder (Shipyard.gd :2047). See `docs/M4-SPAWN-AUDIT.md`; this document covers rocks and
+minerals only.
 
 ## Shards
 
@@ -178,6 +223,8 @@ Rules:
   `processCargoBodyEntry` for puppets, and the MPU skips its `processing` for them.
 - **Two ships, one rock.** The stock game lets several holds count the same rock (it is a refcount). Ownership
   forbids that: the second ship's hold claim gets `o.no(held)`, and its hold does not count the rock.
+- **Drone ships with cargo areas** (scoop, storage pod, claim beacon). Hold entry is a touch for the drone's owner,
+  the same as the player's own hold, and `claimCargo` (ship-ctrl.gd :312) on the drone sends `o.eat` the same way.
 - **Leaving the ring** (dive exit, helpless rescue, remote cargo move). Before `claimCargo` runs, the owner sends
   `o.eat` for every body in `cargo`, then leaves the cell. The authority tombstones them before the leave arrives,
   since both go over the same reliable channel.
@@ -218,7 +265,10 @@ Rules:
 | Cargo hold | ship-ctrl.gd `_on_CargoHoldArea_body_entered` :5189 → `processCargoBodyEntry` :5109 → `processEnteringCargoBay` :5242; exit `processExitingCargoBay` :5206 | Touch `why = hold` at entry; count only owned bodies; release at exit. Skipped entirely on puppets. |
 | MPU | ships/modules/MineralProcessingUnit.gd area enter :248, per tick :168-232, free :232 | Touch `why = mpu`; process only owned bodies; `o.eat` at free. Skipped on puppets. |
 | Carry out of the ring | ship-ctrl.gd `claimCargo` :1266 (callers :1310, :312, Game.gd :227) | `o.eat` for every body in `cargo` before the stock loop frees them. |
-| Weapon damage | laser.gd :266-269, emp.gd :244-247, synchrotron.gd :128-133, projectile.gd :71, sfx/thruster.gd :637 | Puppet-fired: effects only. Fired locally at a body we don't own: queue a `d.ev`. |
+| Beam damage | laser.gd :266-269, emp.gd :244-247, synchrotron.gd :128-133, sfx/thruster.gd :622-640 (heat beam) | Puppet-fired: effects only (also the synchrotron storm-node spawn, :149-156). Fired locally at a body we don't own: queue a `d.ev`. Ship targets carry the hostility flag (laser.gd :271, projectile.gd :83, synchrotron.gd :135, thruster.gd :639). |
+| Bullets and iron-thrower blobs | projectile.gd (contact kinetic + :71 thermal); sfx/thruster.gd :589 / :610 / :681 | The shooter broadcasts the spawn; every machine runs a ballistic copy; damage counts only on the rock owner. |
+| Puppet systems | drone-plant.gd :494-539; DockingArm.gd :645-667, :882, isValidTarget :850-870; PDT.gd :241-300 | Inert or effects-only (see "Puppet systems"). |
+| Ship death | ship-ctrl `vanish()` :894; Reactor.gd blast bodies :256-267 | The owner sends "ship exploded"; blast bodies are simulated where the rocks are owned. |
 | Contact damage | asteroid.gd `_integrate_forces` :331 → `addIntegratedDamage` :310 | Unchanged on the owner; already suppressed on tracked copies (M3). |
 | Despawn | AsteroidSpawner.gd `despawnFarAway` :575 (exempts `essential` and `inCargoHold`) | M3 `ext/AsteroidSpawner.gd` additionally never despawns a body owned by someone else. |
 | Other references to a body | ship-ctrl `cargoLut`, `identifiedObjects`, `systemTargets` (keyed by `hash(node)`); `cargo[]`, `temporaryCargo[]`, `droneQueue[]`, autopilot and AI targets; DockingArm `target`; drone-plant `target(s)`; PDT `queue`; MPU `processing[]`; HUD MineralMark and AutopilotOverlay; story hooks that connect `inCargoHold` (HugeRock :78, PirateTrap :92, Tutorial :106) | An owner change never frees or rebuilds the node, so all of these survive it. They only see a body go away when M3 frees a tracked copy (`r.d`), which the stock code already handles through `tree_exiting`. |
@@ -242,3 +292,7 @@ mass driver ammo is printed by the MPU from `processedCargo`, so it is ship stat
   authority's table shows it after `o.list`.
 - **Puppet weapons:** player A lasers a rock owned by the authority B while B watches A's puppet. The rock takes the
   damage once, matching a solo run with the same laser time.
+- **Bullets:** A fires the mass driver at a rock B owns. The rock takes kinetic and thermal damage once, and its push
+  matches on both machines within the M3 drift tolerance.
+- **Puppet inertness:** a puppet's claw, drones and turrets never lock, push or fire on their own over a 5-minute
+  session (log any attempt).

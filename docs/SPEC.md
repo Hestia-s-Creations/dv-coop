@@ -49,6 +49,7 @@ Done means a stranger downloads it, plays a full evening with three friends, and
 
 - A four-player cell runs at 60 fps on the authority with under 250 kB/s upload, measured.
 - Steam P2P proven across different accounts and networks.
+- Works across screen resolutions, aspect ratios and pixel densities: everything synced is in world units, and every mod UI element (friend markers, lobby panel) is checked at 16:9, 16:10, 21:9 and 5:4, low to 4K, and at the game's UI-scale extremes.
 - Two hours of four-player play with no desync report and zero mod script errors in the engine log.
 - Reconnect after a drop returns a player to the same lobby and their own ship.
 - A game update is handled by re-decompile, diff, re-point, bump the build pin, in about an hour, documented.

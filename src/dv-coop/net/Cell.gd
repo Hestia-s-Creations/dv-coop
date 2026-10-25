@@ -18,7 +18,8 @@ extends Node
 #   authority vanishes, I'm alone:   authority_changed(me), then cell_left()
 #   switching cells:                 cell_left(), then cell_joined(newAuth) in the same tick
 #
-# Dev: --coop-warp-to-peer=<s>  s seconds after the dive cutscene ends, jump 20,000 px from the lowest-id peer.
+# Dev: --coop-warp-to-peer=<s>[,<px>]  s seconds after the dive cutscene ends, jump to <px> (default 20,000) beside a
+#      cell authority (else the lowest-id peer), off to the side of its course, matching its velocity.
 #      --coop-dev-slipstream=<s> as authority with confirmed members, force the stock slipstream every s seconds.
 
 signal cell_joined(authority_id)
@@ -81,6 +82,7 @@ var pinned = false
 var warpAfter = -1.0
 var warpClock = 0.0
 var warpDone = false
+var warpDist = WARP_DISTANCE
 
 var devSlipEvery = -1.0
 var devSlipClock = 0.0
@@ -96,7 +98,10 @@ func _ready():
 	net.on("c.ad", self, "_onAd")
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-warp-to-peer="):
-			warpAfter = float(arg.substr(20))
+			var parts = arg.substr(20).split(",")
+			warpAfter = float(parts[0])
+			if parts.size() > 1:
+				warpDist = float(parts[1])
 		elif arg.begins_with("--coop-dev-slipstream="):
 			devSlipEvery = float(arg.substr(22))
 
@@ -337,6 +342,8 @@ func _leave(why, to = 0):
 	if role == Role.MEMBER:
 		if not lost.has(auth) and net.peers.has(auth):
 			net.send(auth, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
+		# follow-ups armed before or during membership would land next to me, stale
+		_dropQueuedOddities("leaving a cell")
 	else:
 		# resign: with to == 0 the lowest of the rest promotes and keeps the cell's rocks
 		net.sendTo(cellMembers, {"t": "c.leave", "cid": cid, "gen": originGen, "to": to}, true)
@@ -366,6 +373,7 @@ func _join(from, msg):
 	ghost = null
 	_adopt(msg.off)
 	_setSpawner(false)
+	_dropQueuedOddities("joining a cell")
 	_log("JOINED cell %s, authority %s, members=%s gen=%d" % [cid, auth, cellMembers, originGen])
 	emit_signal("cell_joined", auth)
 	net.send(auth, {"t": "c.join", "cid": cid, "gen": originGen}, true)
@@ -374,6 +382,27 @@ func _join(from, msg):
 func _inCutscene():
 	var ship = _ship()
 	return ship != null and ship.get("cutscene") == true
+
+# Story follow-ups (FlightForRescue, Vilcy timers) queue bodies in TheRing.spawnNow, and made-but-unplaced events
+# wait in unspawnedOddities; only the spawner drains them. A member must not carry them into or out of a cell.
+func _dropQueuedOddities(why):
+	var g = net._gameScene()
+	var ring = g.get_node_or_null("TheRing") if g != null else null
+	if ring == null or not ("spawnNow" in ring):
+		return
+	var dropped = 0
+	var bodies = ring.spawnNow.duplicate()
+	for k in ring.unspawnedOddities:
+		var o = ring.unspawnedOddities[k]
+		bodies += o if o is Array else [o]
+	for o in bodies:
+		if o != null and is_instance_valid(o) and not o.is_inside_tree() and not o.is_queued_for_deletion():
+			o.queue_free()
+			dropped += 1
+	ring.spawnNow.clear()
+	ring.unspawnedOddities.clear()
+	ring.unspawnedOdditiesLocation.clear()
+	_log("dropped %d queued oddities (%s)" % [dropped, why])
 
 func _setSpawner(on):
 	var f = _field()
@@ -634,16 +663,25 @@ func _warpTick(delta):
 	var now = _now()
 	var ids = net.peers.keys()
 	ids.sort()
+	var pick = -1
 	for id in ids:
-		var p = _peerPos(id, now)
-		if p == null:
+		if _peerPos(id, now) == null:
 			continue
-		warpDone = true
-		var me = CurrentGame.globalCoords(ship.global_position)
-		var dir = (me - p).normalized() if me != p else Vector2(0, 1)
-		var target = p + dir * WARP_DISTANCE
-		ship.teleportBy(CurrentGame.localCoords(target) - ship.global_position)
-		ship.reset_physics_interpolation()
-		ship.linear_velocity = net.peers[id].beacon.get("v", Vector2(0, 0))
-		_log("WARP dev: %s -> %s, %.0f px from %s" % [me, target, WARP_DISTANCE, id])
+		if pick < 0 or (_cellInfo(id, now) != null and _cellInfo(pick, now) == null):
+			pick = id
+	if pick < 0:
 		return
+	warpDone = true
+	var p = _peerPos(pick, now)
+	var v = net.peers[pick].beacon.get("v", Vector2(0, 0))
+	var me = CurrentGame.globalCoords(ship.global_position)
+	var toMe = (me - p).normalized() if me != p else Vector2(0, 1)
+	# beside its course, not in front of it; on my side
+	var dir = v.normalized().tangent() if v.length() > 1.0 else toMe
+	if dir.dot(toMe) < 0:
+		dir = - dir
+	var target = p + dir * warpDist
+	ship.teleportBy(CurrentGame.localCoords(target) - ship.global_position)
+	ship.reset_physics_interpolation()
+	ship.linear_velocity = v
+	_log("WARP dev: %s -> %s, %.0f px beside %s (v %s)" % [me, target, warpDist, pick, v])

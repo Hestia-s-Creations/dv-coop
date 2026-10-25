@@ -3,11 +3,11 @@ extends "res://AsteroidSpawner.gd"
 # dv-coop AsteroidField extension (M3).
 #
 # A cell member's spawner is suspended (spawnThings = false), which shrinks its despawn bubble to
-# enceladusTravelBubble; rocks tracked by RockSync must still never be despawned locally.
+# enceladusTravelBubble; rocks tracked by RockSync and other players' puppets must still never be despawned locally.
 # A cell member never slipstreams its own origin; the authority does it for the cell (Cell shifts members).
 
 func despawn(body):
-	if body != null and is_instance_valid(body) and body.has_meta("dvnet_tracked"):
+	if body != null and is_instance_valid(body) and (body.has_meta("dvnet_tracked") or body.has_meta("dvnet_puppet")):
 		return
 	.despawn(body)
 

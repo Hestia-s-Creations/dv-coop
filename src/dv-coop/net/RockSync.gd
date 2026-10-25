@@ -19,6 +19,7 @@ const NEAR_HZ = 10.0
 const FAR_HZ = 2.0
 const INTEREST_HZ = 2.0
 const BATCH = 200
+const DEFER_MARGIN = 150.0   # authority: a rock this close to a member's ship (puppet here) is not sent to it yet
 const SNAP_DISTANCE = 400.0
 const SNAP_ANGLE = 0.8
 const CORRECTION_GAIN = 3.0
@@ -45,8 +46,11 @@ var farAccum = 0.0
 var interestAccum = 0.0
 var logAccum = 0.0
 var screenDump = false     # dev: DVCOOP_RS_SCREEN=1 also logs the camera transform and every rock on screen
+var puppetProbe = false   # dev: DVCOOP_RS_PUPPETS=1 logs rock clearance around ships after a snapshot, and hull impacts
+var probeUntil = 0
+var mineralLog = 0         # dev: DVCOOP_RS_MINERALS=1 logs the first few minerals sent (authority) / built (member)
 var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
-var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
+var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0, "defer": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
 var hooked = null    # the Cell whose signals we listen to
 var replaying = false
@@ -58,6 +62,8 @@ func _ready():
 		logEvery = max(0.2, float(sample))
 		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
 	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
+	puppetProbe = OS.get_environment("DVCOOP_RS_PUPPETS") == "1"
+	mineralLog = 5 if OS.get_environment("DVCOOP_RS_MINERALS") == "1" else 0
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
@@ -199,6 +205,8 @@ func _onChildExiting(node):
 func _recipe(id, n) -> Array:
 	var kind = n.filename.substr(ROCK_PREFIX.length()).trim_suffix(".tscn")
 	var mineral = n.get("mineralContent") != null
+	if mineral:
+		_logMineral("sent", id, n)
 	return [id, kind, 1.0 if mineral else n.additionalScale, n.global_position, n.global_rotation,
 		n.linear_velocity, n.angular_velocity, n.asteroidClass, n.mineralContent if mineral else n.rnd,
 		n.estimatedRadius, 0 if mineral else n.splitsTo]
@@ -231,9 +239,17 @@ func _build(rc):
 	n.angular_velocity = rc[6]
 	if mineral:
 		_setMineralContent(n, rc[8])
+		_logMineral("built", id, n)
 	else:
 		n.rnd = rc[8]
 	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": OS.get_ticks_msec()}
+
+var mineralsLogged = {}
+func _logMineral(what, id, n):
+	if mineralLog <= 0 or mineralsLogged.has(id) or mineralsLogged.size() >= mineralLog:
+		return
+	mineralsLogged[id] = true
+	Debug.l("COOP: RS mineral %s %s %s content=%.6f mass=%.4f composition=%s" % [what, id, n.filename.get_file(), n.mineralContent, n.mass, n.composition])
 
 # mineral._ready() rolls its own content and scales by it; redo that with the authority's roll.
 func _setMineralContent(n, k):
@@ -305,7 +321,7 @@ func _freeOwnRocks():
 	var n = 0
 	for id in rocks.keys():
 		var node = rocks[id]
-		if is_instance_valid(node) and not node.has_meta("dvnet_tracked"):
+		if is_instance_valid(node) and not node.has_meta("dvnet_tracked") and not node.has_meta("dvnet_puppet"):
 			field.kill(node, true)
 			n += 1
 	rocks.clear()
@@ -382,12 +398,12 @@ func _authorityTick(delta, cell):
 						rv.known.erase(id)
 						rv.slept.erase(id)
 						despawn.append(id)
-				elif d < FAR:
+				elif d < FAR and not _overlapsShipOf(peer, rocks[id]):
 					rv.known[id] = true
 					spawn.append(_recipe(id, rocks[id]))
 		else:
 			for id in fresh:
-				if rocks.has(id) and not rv.known.has(id) and rocks[id].global_position.distance_to(at) < FAR:
+				if rocks.has(id) and not rv.known.has(id) and rocks[id].global_position.distance_to(at) < FAR 						and not _overlapsShipOf(peer, rocks[id]):
 					rv.known[id] = true
 					spawn.append(_recipe(id, rocks[id]))
 		if rv.snap:
@@ -404,6 +420,39 @@ func _authorityTick(delta, cell):
 			_sendUpdates(peer, rv, at, near, far, g)
 	fresh.clear()
 	gone.clear()
+
+# Would this rock, built on the member's machine, sit inside or against that member's ship? Its ship is the puppet
+# here. Same shape query as the stock spawner's placement test, with a margin for the puppet's lag. A deferred rock
+# stays unknown to that member, so the next interest pass (0.5 s) tries again.
+func _overlapsShipOf(peer, rock) -> bool:
+	var pp = net._puppetOf(peer)
+	if pp == null or rock.global_position.distance_to(pp.global_position) > 4000.0:
+		return false
+	var collider = rock.getCollider() if rock.has_method("getCollider") else null
+	if collider == null:
+		return false
+	var shape
+	if collider.has_method("get_shape"):
+		shape = collider.get_shape()
+	else:
+		shape = ConvexPolygonShape2D.new()
+		shape.points = collider.polygon
+	var params = Physics2DShapeQueryParameters.new()
+	params.set_shape(shape)
+	params.transform = collider.global_transform
+	params.margin = DEFER_MARGIN
+	params.collision_layer = field.asteroidIntersectionTest
+	params.collide_with_bodies = true
+	params.collide_with_areas = false
+	params.exclude = [rock.get_rid()]
+	for hit in rock.get_world_2d().direct_space_state.intersect_shape(params, 16):
+		var c = hit.collider
+		while c != null and c != field:
+			if c == pp:
+				sent.defer += 1
+				return true
+			c = c.get_parent()
+	return false
 
 func _sendBatches(peer, t, recipes, snap, g):
 	var n = recipes.size()
@@ -496,6 +545,8 @@ func _onSpawn(from, msg):
 				pruned += 1
 		Debug.l("COOP: RS snapshot from %s applied: %d tracked, %d pruned" % [from, tracked.size(), pruned])
 		snapSeen = null
+		if puppetProbe:
+			_probeShips()
 
 func _onDespawn(from, msg):
 	var cell = _cell()
@@ -573,6 +624,38 @@ func _memberTick(delta, cell):
 			if abs(av - n.angular_velocity) > 0.005:
 				n.angular_velocity = av
 
+# ---------------------------------------------------------------- dev probe: rocks built onto ships
+
+func _ships() -> Array:
+	var out = []
+	if net.localShip != null and is_instance_valid(net.localShip):
+		out.append(net.localShip)
+	for id in net.peers:
+		var pp = net._puppetOf(id)
+		if pp != null:
+			out.append(pp)
+	return out
+
+func _probeShips():
+	for ship in _ships():
+		var best = null
+		var bestId = ""
+		for id in tracked:
+			var n = tracked[id].n
+			if is_instance_valid(n):
+				var gap = n.global_position.distance_to(ship.global_position) - n.estimatedRadius
+				if best == null or gap < best:
+					best = gap
+					bestId = id
+		Debug.l("COOP: RS probe ship '%s' puppet=%s: nearest tracked rock %s, centre gap minus rock radius %.0f px" % [ship.name, ship.has_meta("dvnet_puppet"), bestId, best if best != null else -1])
+		if not ship.is_connected("damageImpact", self, "_onProbeImpact"):
+			ship.connect("damageImpact", self, "_onProbeImpact", [ship])
+	probeUntil = OS.get_ticks_msec() + 20000
+
+func _onProbeImpact(power, point, delta, ship):
+	if OS.get_ticks_msec() < probeUntil and power > 50:
+		Debug.l("COOP: RS probe impact on '%s' puppet=%s power=%.0f at %s" % [ship.name, ship.has_meta("dvnet_puppet"), power, CurrentGame.globalCoords(point)])
+
 # ---------------------------------------------------------------- logging
 
 func _nearest(pool: Dictionary, at: Vector2, k: int) -> Array:
@@ -596,7 +679,7 @@ func _logState():
 	# ms = wall clock, so lines from different machines can be lined up to the millisecond
 	var line = "COOP: RS role=%s ms=%d bodies=%d rocks=%d tracked=%d" % [role, OS.get_system_time_msecs(), bodies.size(), rocks.size(), tracked.size()]
 	if role == "authority":
-		line += " recv=%d sent s=%d d=%d u=%d up=%.1f kB/s" % [receivers.size(), sent.s, sent.d, sent.u, sent.bytes / 1000.0 / logEvery]
+		line += " recv=%d sent s=%d d=%d u=%d deferred=%d up=%.1f kB/s" % [receivers.size(), sent.s, sent.d, sent.u, sent.defer, sent.bytes / 1000.0 / logEvery]
 		for peer in receivers:
 			var at = _receiverPos(peer)
 			if at != null:
@@ -604,7 +687,7 @@ func _logState():
 	elif role == "member" and net.localShip != null and is_instance_valid(net.localShip):
 		line += " | near[me]=%s" % PoolStringArray(_nearest(tracked, net.localShip.global_position, 3)).join(" ")
 	Debug.l(line)
-	sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
+	sent = {"s": 0, "d": 0, "u": 0, "bytes": 0, "defer": 0}
 	if screenDump and role != "solo":
 		_logScreen()
 
