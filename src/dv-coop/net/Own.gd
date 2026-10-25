@@ -27,6 +27,9 @@ var heldHere = {}     # authority: id -> why, rocks the authority's own player i
 var tomb = {}         # authority: id -> time (s) it was consumed or fractured
 var reasons = {}      # id -> {why: true}: which local systems touch it (claw, hold, mpu, ...); released when empty
 var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run when granted
+var born = []         # member: ids of rocks born in our field (fracture shards of rocks we own), sent next tick
+var fractured = {}    # member: ids of rocks we owned that started fracturing, sent with the next o.new
+var fractureIds = {}  # authority: parents tombstoned by o.new (their exit counts as a fracture)
 var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta], ...]
 var streamAccum = 0.0
 var conserveAccum = 0.0
@@ -39,7 +42,7 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
-	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat"]:
+	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	call_deferred("_hook")
 
@@ -223,6 +226,53 @@ func _on_o_eat(from, msg):
 	var node = _rs().untrack(id)
 	if node != null:
 		Tool.remove(node)   # its exit sends r.d to every member that knows it
+
+# ---------------------------------------------------------------- shards of rocks a member owns (o.new)
+
+# Member: rocks we owned started fracturing and their shards were spawned here (stock code). Hand them over.
+func _sendBorn():
+	for id in mine.keys():
+		var n = mine[id]
+		if is_instance_valid(n) and n.get("fracturing") == true and not fractured.has(id):
+			fractured[id] = true
+	if born.empty() and fractured.empty():
+		return
+	var rs = _rs()
+	var l = []
+	for id in born:
+		var rc = rs.recipeOf(id)
+		if rc != null:
+			l.append(rc)
+	var parents = fractured.keys()
+	net.send(_cell().authority(), {"t": "o.new", "l": l, "parents": parents}, true)
+	for rc in l:
+		rs.handOver(rc[0])
+	for id in parents:
+		mine.erase(id)
+		reasons.erase(id)
+	Debug.l("COOP: OWN o.new: %d shards, parents %s" % [l.size(), parents])
+	born.clear()
+	fractured.clear()
+
+func _on_o_new(from, msg):
+	if not _isAuthority():
+		return
+	var rs = _rs()
+	for pid in msg.get("parents", []):
+		var id = str(pid)
+		if owners.get(id) != from:
+			continue
+		owners.erase(id)
+		tomb[id] = _now()
+		fractureIds[id] = true
+		var n = rs.untrack(id)
+		if n != null:
+			Tool.remove(n)   # members see it vanish (r.d) as the shards arrive
+	var built = 0
+	for rc in msg.get("l", []):
+		if rs.buildSimulated(rc) != null:
+			built += 1
+	Debug.l("COOP: OWN o.new from %s: %d shards built, parents %s" % [from, built, msg.get("parents")])
 
 # ---------------------------------------------------------------- authority: arbitration
 
@@ -449,6 +499,7 @@ func _physics_process(delta):
 	_flushDamage()
 	if role == "member":
 		_reportOwned()
+		_sendBorn()
 	if role == "authority":
 		_reownLost()
 		for id in tomb.keys():
@@ -580,6 +631,8 @@ func _on_o_list(from, msg):
 func _onRockBorn(id, node):
 	if role == "authority":
 		cons.born += 1
+	elif role == "member" and not node.has_meta("dvnet_tracked"):
+		born.append(id)   # only fracture spawns rocks on a member (its spawner is suspended)
 
 const DISABLED_LAYER = 2147483648   # the MPU sets this collision layer on a rock just before freeing it
 
@@ -587,14 +640,19 @@ func _onRockGone(id, node):
 	if role == "member" and mine.has(id):
 		# a rock we own is leaving our field
 		if node.get("fracturing") == true:
-			Debug.l("COOP: OWN %s fractured while ours (shards via o.new: M4 TODO)" % id)
 			mine.erase(id)
+			fractured[id] = true
 		elif node.collision_layer == DISABLED_LAYER:
 			eat(node, "mpu")
 		else:
 			_release(id, node, "left-field")
 		return
 	if role != "authority":
+		return
+	if fractureIds.has(id):
+		fractureIds.erase(id)
+		cons.gone += 1
+		cons.gone_by["fracture"] = cons.gone_by.get("fracture", 0) + 1
 		return
 	if node.collision_layer == DISABLED_LAYER and not eatenIds.has(id) and not owners.has(id):
 		_tombstone(id, node.getComposition().duplicate() if node.has_method("getComposition") else {}, "mpu")
