@@ -31,6 +31,7 @@ const VIEW_HZ = 10.0
 const STATE_EVERY = 2.0
 const HB_HZ = 5.0
 const AUTH_SILENT = 1.5        # member: authority quiet this long (crash) -> gone, next-lowest takes over
+const STALL = 0.25             # a frame of mine longer than this restarts the silence clock
 const ORPHAN_WAIT = 2.0        # member: authority out of my view and nobody claimed the cell -> leave
 const BEACON_EXTRAP_MAX = 2.0
 const SLIP_MARGIN = 150000.0   # authority slipstreams early once any member gets this close to the radius
@@ -68,6 +69,7 @@ var lastComp = []
 var lost = {}                  # id -> s: authority resigned or went silent; out of the graph until heard again
 var heardAt = {}               # id -> s, last c.* packet from it
 var orphanSince = -1.0
+var lastTickAt = -1.0
 
 var viewAccum = 0.0
 var stateAccum = 0.0
@@ -148,6 +150,11 @@ func _physics_process(delta):
 	if net.myId == 0 or not net.is_physics_processing():
 		return
 	var now = _now()
+
+	# My own stall (building a snapshot, loading) is not the authority going quiet.
+	if lastTickAt >= 0 and now - lastTickAt > STALL and role == Role.MEMBER:
+		heardAt[auth] = max(heardAt.get(auth, now), now)
+	lastTickAt = now
 
 	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
 		lost[auth] = now
