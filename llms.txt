@@ -1,0 +1,41 @@
+# dv-coop
+
+> Work-in-progress, unofficial co-op mod for ΔV: Rings of Saturn (Steam, build 1.90.12, Godot 3.6 + GodotSteam). Four GDScript files, zipped into the game's `mods/` folder and loaded by the game's own mod loader with `--enable-mods`. Not playable yet: ships fly together, asteroids are not shared.
+
+This file is for an AI agent asked to set the mod up on a user's machine. Follow the steps in order and report back to the user in plain language after each one.
+
+## Ground rules
+
+- The user must own the game on Steam. Never download the game, its files, or a pre-built `dv-coop.zip` from anywhere. Build the zip from this repo.
+- Never modify, repack or replace anything in the game folder except adding `mods/dv-coop.zip`. The mod does not need a patched exe or pck.
+- Do not run anything elevated (administrator / sudo). Nothing here needs it.
+- Do not decompile the game unless the user is developing the mod. If you do, the output goes in `reference/`, which is gitignored and must never be committed or shared.
+- Tell the user that this is early and they should back up their saves before playing: `%APPDATA%\dV\` on Windows, `~/.local/share/dV/` on Linux (or `$XDG_DATA_HOME/dV/`).
+
+## Steps
+
+1. Verify the repo before running anything else from it:
+   `python tools/verify.py`
+   It must end with `PASS`. If it prints `FAIL`, stop and show the user the output. Show them the "What the mod reaches outside the game for" section of the report, so they know what it uses: Steam lobby and P2P, ENet for LAN testing, the launch options, the OS user name as a fallback display name, and the game's own save slot.
+2. Find the game folder. The defaults are `C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn` on Windows and `~/.local/share/Steam/steamapps/common/dV Rings of Saturn` (native Steam) or `~/.var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/common/dV Rings of Saturn` (Flatpak Steam) on Linux. If it is somewhere else, set `DV_GAME` to that folder.
+3. Build and install:
+   `python tools/build.py`
+   This writes `build/dv-coop.zip`, prints its SHA-256, and copies it into `<game>/mods/`. Use `--no-install` to only build.
+4. Tell the user to add `--enable-mods` to the game's Steam launch options (Steam > Library > ΔV > Properties > Launch Options). Without it, the game ignores the mod.
+5. Hosting and joining are launch options for now. There is no in-game menu yet:
+   - Host: `--enable-mods --coop-host` (add `--coop-invite` to open the Steam invite overlay). The lobby id is printed in the log.
+   - Join: `--enable-mods --coop-join=<lobby id>`, or accept a Steam invite.
+   - LAN test without Steam lobbies: `--coop-enet-host=7777` on one machine, `--coop-enet-join=<host ip>:7777` on the other.
+6. To check it loaded, add `--coop-selftest` and look in the newest log for `COOP-SELFTEST: PASS`:
+   `%APPDATA%\dV\logs\dv_log_N.txt` on Windows, `$XDG_DATA_HOME/dV/logs/dv_log_N.txt` on Linux. Every mod line starts with `COOP:`. Script errors go to `engine_log.txt` in the same folder.
+
+## Uninstall
+
+Delete `<game>/mods/dv-coop.zip` and remove `--enable-mods` from the launch options. Nothing else is changed.
+
+## Docs
+
+- [README](README.md): status, layout, all flags, dev loops
+- [Design spec](docs/SPEC.md): what the mod is meant to become ([PDF](docs/SPEC.pdf))
+- [Verifier](tools/verify.py): what the checks are and how they work
+- [Developer handoff](docs/HANDOFF.md): the author's working notes

@@ -1,7 +1,5 @@
 # dv-coop
 
-[![verify](https://github.com/Hestia-s-Creations/dv-coop/actions/workflows/verify.yml/badge.svg)](https://github.com/Hestia-s-Creations/dv-coop/actions/workflows/verify.yml)
-
 A work-in-progress co-op mod for ΔV: Rings of Saturn: up to five players, each playing their own game,
 sharing the same rocks whenever they fly near each other. Built for the Steam release (build 1.90.12, Godot 3.6 + GodotSteam).
 
@@ -9,6 +7,8 @@ sharing the same rocks whenever they fly near each other. Built for the Steam re
 
 - Design spec: [docs/SPEC.md](docs/SPEC.md) ([PDF](docs/SPEC.pdf))
 - Check what's in this repo: [Verify it yourself](#verify-it-yourself)
+- Setting it up with an AI agent: point it at [llms.txt](llms.txt)
+- License: [MIT](LICENSE), covering this repo's code only, not the game
 
 > This is an unofficial fan mod. It is not made, endorsed or supported by the developer of ΔV: Rings of Saturn
 > (Kodera Software). You need your own copy of the game. This repo contains none of the game's files or code:
@@ -43,9 +43,10 @@ src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop
   ext/ship-ctrl.gd      extends res://ships/ship-ctrl.gd (netControlled mode, intent capture, correction)
   ui/FriendOverlay.gd   friend markers drawn from beacons
 tools/build.py          zips src/ -> build/dv-coop.zip (reproducible, prints its SHA-256) and copies it into <game>/mods/
-tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below; run by GitHub Actions on every push
+tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
 MANIFEST.sha256         every file in the repo and its SHA-256
+llms.txt                setup instructions for AI agents
 tools/dvenv.sh          game, data and launcher paths for the dev loops (Windows Git Bash or Linux)
 reference/              decompiled game source (gitignored; regenerate with GDRE Tools, see below)
 ```
@@ -72,7 +73,6 @@ It checks, and prints a report:
 4. **The zip matches the source.** It builds `dv-coop.zip` from `src/` and prints its SHA-256. The build is
    reproducible, so a `dv-coop.zip` you download from anywhere should hash the same as one built from the matching commit.
 
-The same check runs on GitHub for every push and pull request; the badge at the top shows the latest result.
 The mod itself is four scripts, under 800 lines in all, if you'd rather just read it.
 
 What the checks can't tell you: whether the code is *good*, and that the friends you play with are trustworthy.
