@@ -19,7 +19,7 @@ signal granted(id)
 
 var net = null   # CoopNet
 
-var owner = {}        # id -> peer id of the owner (absent = the cell authority)
+var owners = {}        # id -> peer id of the owner (absent = the cell authority)
 var epoch = {}        # id -> int
 var pending = {}      # member: id -> {at (s), why}
 var mine = {}         # member: id -> node, rocks this machine owns (not as authority)
@@ -66,7 +66,7 @@ func _inCell() -> bool:
 
 func ownerOf(id):
 	var c = _cell()
-	return owner.get(id, c.authority() if c != null else net.myId)
+	return owners.get(id, c.authority() if c != null else net.myId)
 
 func epochOf(id) -> int:
 	return epoch.get(id, 0)
@@ -74,7 +74,7 @@ func epochOf(id) -> int:
 func ownsHere(id) -> bool:
 	if mine.has(id):
 		return true
-	return _isAuthority() and not owner.has(id)
+	return _isAuthority() and not owners.has(id)
 
 # ---------------------------------------------------------------- touch / release (called by the ext seams)
 
@@ -85,7 +85,7 @@ func touch(node, why) -> bool:
 		return true
 	var id = node.get_meta("dvnet")
 	if _isAuthority():
-		if owner.has(id):
+		if owners.has(id):
 			emit_signal("denied", id, "held")
 			return false
 		heldHere[id] = why
@@ -154,7 +154,7 @@ func _on_o_req(from, msg):
 		reason = "gone"
 	elif node.get("fracturing") == true:
 		reason = "fracturing"
-	elif owner.has(id) and owner[id] != from:
+	elif owners.has(id) and owners[id] != from:
 		reason = "held"
 	elif heldHere.has(id):
 		reason = "held"
@@ -162,11 +162,11 @@ func _on_o_req(from, msg):
 		net.send(from, {"t": "o.no", "id": id, "why": reason, "owner": ownerOf(id), "e": epochOf(id)}, true)
 		Debug.l("COOP: OWN deny %s to %s (%s)" % [id, from, reason])
 		return
-	if owner.get(id) == from:
+	if owners.get(id) == from:
 		return   # duplicate request; the earlier grant stands
 	var e = epochOf(id) + 1
 	epoch[id] = e
-	owner[id] = from
+	owners[id] = from
 	rs.track(id, node, node.global_position, node.global_rotation, node.linear_velocity, node.angular_velocity)
 	net.send(from, {"t": "o.ok", "id": id, "e": e,
 		"p": node.global_position, "r": node.global_rotation, "v": node.linear_velocity, "w": node.angular_velocity}, true)
@@ -177,12 +177,12 @@ func _on_o_rel(from, msg):
 	if not _isAuthority():
 		return
 	var id = str(msg.get("id"))
-	if owner.get(id) != from or int(msg.get("e", -1)) != epochOf(id):
-		Debug.l("COOP: OWN stale release %s from %s e=%s (owner %s e=%d)" % [id, from, msg.get("e"), owner.get(id), epochOf(id)])
+	if owners.get(id) != from or int(msg.get("e", -1)) != epochOf(id):
+		Debug.l("COOP: OWN stale release %s from %s e=%s (owner %s e=%d)" % [id, from, msg.get("e"), owners.get(id), epochOf(id)])
 		return
 	var rs = _rs()
 	var node = rs.untrack(id)
-	owner.erase(id)
+	owners.erase(id)
 	var e = epochOf(id) + 1
 	epoch[id] = e
 	if node != null:
@@ -207,7 +207,7 @@ func _on_o_ok(from, msg):
 	var id = str(msg.get("id"))
 	var e = int(msg.get("e", 0))
 	epoch[id] = e
-	owner[id] = net.myId
+	owners[id] = net.myId
 	if not pending.has(id):
 		# timed out or let go meanwhile: give it straight back
 		var node = _rs().nodeOf(id)
@@ -231,7 +231,7 @@ func _on_o_no(from, msg):
 	if int(msg.get("e", -1)) >= 0:
 		epoch[id] = int(msg.e)
 	if int(msg.get("owner", -1)) >= 0:
-		owner[id] = int(msg.owner)
+		owners[id] = int(msg.owner)
 	if pending.has(id):
 		pending.erase(id)
 		_resumeCorrection(id)
@@ -246,9 +246,9 @@ func _on_o_chg(from, msg):
 	epoch[id] = e
 	var c = _cell()
 	if int(msg.owner) == c.authority():
-		owner.erase(id)
+		owners.erase(id)
 	else:
-		owner[id] = int(msg.owner)
+		owners[id] = int(msg.owner)
 
 # ---------------------------------------------------------------- streams
 
@@ -363,7 +363,7 @@ func _physics_process(delta):
 			_logConservation()
 
 func _changeRole(from, to):
-	Debug.l("COOP: OWN role %s -> %s (mine=%d owned-by-players=%d)" % [from, to, mine.size(), owner.size()])
+	Debug.l("COOP: OWN role %s -> %s (mine=%d owned-by-players=%d)" % [from, to, mine.size(), owners.size()])
 	# M4 TODO (gates 3/4): re-own on disconnect, o.list on handoff. For now a role change resets the table.
 	for id in mine.keys():
 		var n = mine[id]
@@ -372,7 +372,7 @@ func _changeRole(from, to):
 	mine.clear()
 	pending.clear()
 	heldHere.clear()
-	owner.clear()
+	owners.clear()
 	epoch.clear()
 	role = to
 	cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -424,4 +424,4 @@ func _logConservation():
 	var ok = (cons.born - cons.gone) == live
 	Debug.l("COOP: OWN conserve born=%d gone=%d %s live=%d %s player-owned=%d mass=%.0f comp{%s} eaten{%s}" % [
 		cons.born, cons.gone, cons.gone_by, live, "OK" if ok else "MISMATCH(%d)" % (cons.born - cons.gone - live),
-		owner.size(), mass, PoolStringArray(parts).join(" "), cons.eaten])
+		owners.size(), mass, PoolStringArray(parts).join(" "), cons.eaten])
