@@ -167,7 +167,7 @@ def gate9c(insts):
             continue
         staged = True
         ev_name = re.search(r"\(event (\S+)\)", lines[poi[0]]).group(1)
-        spawns = [n for n, l in enumerate(lines) if re.search(r"(Location-based oddity|Re-spawning) %s" % re.escape(ev_name), l)]
+        spawns = [n for n, l in enumerate(lines) if re.search(r"(Location-based oddity|Re-spawning) %s\b" % re.escape(ev_name), l)]
         freed = [(n, re.search(r"freed (\d+) oddities of mine (\[.*?\]), kept (\d+) (\[.*\])", l)) for n, l in enumerate(lines)
                  if "joined: freed" in l and "oddities" in l]
         back = [n for n, l in enumerate(lines) if "COOP: NPC dev: returned to" in l]
