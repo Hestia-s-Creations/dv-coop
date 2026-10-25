@@ -13,6 +13,7 @@ const CLAIM_TIMEOUT = 0.5      # s without an answer counts as a deny
 const STREAM_HZ = 20.0         # o.u rate for rocks a player owns
 const CONSERVE_EVERY = 30.0    # s between conservation log lines (authority)
 const TOMB_SECONDS = 30.0
+const OWNER_SILENT = 1.2       # s without an o.u from a player who owns rocks: it's gone, take them back
 
 signal denied(id, reason)      # our claim on id was refused (or timed out); whoever touched it lets go
 signal granted(id)
@@ -35,6 +36,8 @@ var streamAccum = 0.0
 var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
 var lastAuth = -1     # member: the authority we last reported our rocks to (o.list)
+var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
+var told = {}         # authority: members we've sent the ownership table to
 
 # conservation (authority): every rock that entered and left this field, by reason
 var cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -357,6 +360,7 @@ func _on_o_req(from, msg):
 	var e = epochOf(id) + 1
 	epoch[id] = e
 	owners[id] = from
+	heard[from] = _now()
 	rs.track(id, node, node.global_position, node.global_rotation, node.linear_velocity, node.angular_velocity)
 	net.send(from, {"t": "o.ok", "id": id, "e": e,
 		"p": node.global_position, "r": node.global_rotation, "v": node.linear_velocity, "w": node.angular_velocity}, true)
@@ -446,10 +450,20 @@ func _on_o_chg(from, msg):
 		owners.erase(id)
 	else:
 		owners[id] = int(msg.owner)
+	if mine.has(id) and int(msg.owner) != net.myId:
+		# taken from us (the authority thought we were gone): back to a tracked copy, and whoever holds it lets go
+		var n = mine[id]
+		mine.erase(id)
+		reasons.erase(id)
+		if is_instance_valid(n):
+			_rs().track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
+		Debug.l("COOP: OWN %s revoked by the authority e=%d" % [id, e])
+		emit_signal("denied", id, "revoked")
 
 # ---------------------------------------------------------------- streams
 
 func _on_o_u(from, msg):
+	heard[from] = _now()
 	var l = msg.get("l")
 	if not (l is Array):
 		return
@@ -555,6 +569,7 @@ func _physics_process(delta):
 		_reportOwned()
 		_sendBorn()
 	if role == "authority":
+		_tellNewMembers()
 		_reownLost()
 		for id in tomb.keys():
 			if now - tomb[id] > TOMB_SECONDS:
@@ -602,6 +617,8 @@ func _changeRole(from, to):
 		owners.clear()
 		epoch.clear()
 	lastAuth = -1
+	told.clear()
+	heard.clear()
 	role = to
 	cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
 	if to == "authority":
@@ -609,15 +626,36 @@ func _changeRole(from, to):
 
 # ---------------------------------------------------------------- disconnect and handoff
 
+# Authority: a member who joined after a rock changed hands never saw that o.chg; without it, it would ignore the
+# owner's o.u (wrong sender) and its copy would coast. Send it the table once.
+func _tellNewMembers():
+	var members = _cell().members()
+	for p in told.keys():
+		if not (p in members):
+			told.erase(p)
+	for p in members:
+		if p == net.myId or told.has(p):
+			continue
+		told[p] = true
+		for id in owners:
+			net.send(p, {"t": "o.chg", "id": id, "owner": owners[id], "e": epochOf(id)}, true)
+		for id in heldHere:
+			net.send(p, {"t": "o.chg", "id": id, "owner": net.myId, "e": epochOf(id)}, true)
+		if not owners.empty():
+			Debug.l("COOP: OWN told new member %s about %d player-owned rocks" % [p, owners.size()])
+
 # Authority: a player who owns rocks has left the cell (quit, crashed, flew off). Its rocks come back to us at their
 # last streamed state (the tracked copy is already there).
 func _reownLost():
 	var c = _cell()
 	var members = c.members()
+	var now = _now()
 	var lost = {}
 	for id in owners.keys():
 		var p = owners[id]
-		if p != net.myId and not (p in members):
+		# gone from the cell, or silent: an owner streams o.u at STREAM_HZ for as long as it owns anything, so a crash
+		# shows here well before the cell's own timeout drops it
+		if p != net.myId and (not (p in members) or now - heard.get(p, now) > OWNER_SILENT):
 			lost[id] = p
 	if lost.empty():
 		return
@@ -696,7 +734,7 @@ func _onRockGone(id, node):
 		if node.get("fracturing") == true:
 			mine.erase(id)
 			fractured[id] = true
-		elif node.collision_layer == DISABLED_LAYER:
+		elif node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true:
 			eat(node, "mpu")
 		else:
 			_release(id, node, "left-field")
@@ -708,7 +746,8 @@ func _onRockGone(id, node):
 		cons.gone += 1
 		cons.gone_by["fracture"] = cons.gone_by.get("fracture", 0) + 1
 		return
-	if node.collision_layer == DISABLED_LAYER and not eatenIds.has(id) and not owners.has(id):
+	# the MPU and a fracturing asteroid both park the rock on this layer; only the first is an eat
+	if node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true and not eatenIds.has(id) and not owners.has(id):
 		_tombstone(id, node.getComposition().duplicate() if node.has_method("getComposition") else {}, "mpu")
 		heldHere.erase(id)
 	cons.gone += 1
