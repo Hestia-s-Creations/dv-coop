@@ -9,12 +9,23 @@ extends Node
 #                           COOP: BOT race trial=i id=... owner=<peer> after claims, owner=<peer> after release (authority)
 #                         Members log the measured clock skew to the coordinator (sent time vs local time - rtt/2);
 #                         on one PC it is ~0, across machines it is what the agreed `at` is off by.
-# More modes (claw, laser, massdriver) follow the same pattern: an authority-picked target, logged results.
+#   --coop-bot=claw[,N]   gates 2-4. Run it on a member (dev3: C, which always joins as a member). Before the
+#                         dive it fits a salvage arm (SYSTEM_SALVAGE_ARM) into a weapon slot of the dev save's ship.
+#                         Each trial: pick the nearest tracked rock the arm can lift, teleport so the arm's dock
+#                         area covers it at matching velocity, let the stock arm lock (= Own claim), hold CLAW_HOLD s,
+#                         release (arm off). Lines: COOP: BOT claw trial=i id=... result=granted|denied:<why>|nolock
+#                         and, while held, "COOP: BOT claw holding id=... at x,y" every second (for gates 3 and 4).
+#                         --coop-bot=claw,N,hold keeps the last rock in the claw instead of releasing it.
+# More modes (laser, massdriver) follow the same pattern.
 
 const RACE_EVERY = 3.0      # s between trials
 const RACE_LEAD = 0.6       # s between bot.go and the claim instant
 const RACE_HOLD = 0.8       # s a winner holds the rock before releasing
 const SETTLE = 10.0         # s in a cell before the first trial
+const CLAW_WAIT = 6.0       # s for the arm to lock and the claim to resolve
+const CLAW_HOLD = 3.0       # s a claw trial holds its rock
+const CLAW_GAP = 2.0        # s between claw trials
+const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
 
 var net = null   # CoopNet
 
@@ -27,6 +38,13 @@ var plan = {}        # member: trial -> {id, at (wall ms)}
 var holding = {}     # member: id -> release time (s)
 var results = {}     # member: id -> trial waiting for granted / denied
 var checks = []      # authority: [{trial, id, at (s), what}]
+var keepLast = false # claw: hold the last rock instead of releasing it
+var armFitted = false
+var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
+var holdLogAt = 0.0
+var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
+const MAX_ATTEMPTS = 10
+var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 
 func _ready():
 	name = "DevBot"
@@ -35,6 +53,7 @@ func _ready():
 			var parts = arg.substr(11).split(",")
 			mode = parts[0]
 			trials = int(parts[1]) if parts.size() > 1 else 100
+			keepLast = parts.size() > 2 and parts[2] == "hold"
 	if mode == "":
 		Debug.l("COOP: BOT inactive")
 		set_physics_process(false)
@@ -63,6 +82,9 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 func _physics_process(delta):
+	if mode == "claw":
+		_clawTick()
+		return
 	if mode != "race":
 		return
 	var c = _cell()
@@ -155,7 +177,126 @@ func _member(now):
 			if node != null:
 				_own().untouch(node, "bot")
 
+# ---------------------------------------------------------------- claw
+
+# Fit a salvage arm into the dev save's ship right after autodive loads the save, before the Game scene builds it.
+func _fitArm():
+	if armFitted or not net.autoDiveStarted:
+		return
+	armFitted = true
+	var cfg = CurrentGame.state.ship.get("config", {})
+	var ws = cfg.get("weaponSlot", {})
+	if ws.empty():
+		Debug.l("COOP: BOT claw: ship has no weapon slots in its config, cannot fit an arm")
+		return
+	var slot = "left" if ws.has("left") else ws.keys()[0]
+	Debug.l("COOP: BOT claw: fitting SYSTEM_SALVAGE_ARM to weaponSlot.%s (was %s)" % [slot, ws[slot].get("type")])
+	ws[slot]["type"] = "SYSTEM_SALVAGE_ARM"
+
+func _arm():
+	var ship = net.localShip
+	if ship == null or not is_instance_valid(ship):
+		return null
+	return _findArm(ship)
+
+func _findArm(n):
+	for c in n.get_children():
+		if c.has_method("isValidTarget") and c.has_method("switchTarget"):
+			return c
+		var r = _findArm(c)
+		if r != null:
+			return r
+	return null
+
+func _clawTick():
+	_fitArm()
+	var c = _cell()
+	if c == null or not c.inCell() or c.isAuthority():
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	var arm = _arm()
+	var ship = net.localShip
+	if arm == null or ship == null or ship.get("cutscene") == true or now - inCellSince < SETTLE:
+		return
+	match claw.state:
+		"idle":
+			if trial >= trials or now < claw.until:
+				return
+			var id = _pickClawRock(ship)
+			if id == "":
+				return
+			trial += 1
+			claw = {"state": "reach", "id": id, "until": now + CLAW_WAIT, "result": ""}
+			results[id] = trial
+			arm.enabled = true
+			Debug.l("COOP: BOT claw trial=%d id=%s reaching" % [trial, id])
+		"reach":
+			var rock = _rs().nodeOf(claw.id)
+			if rock == null:
+				_clawEnd(arm, "missing", now)
+				return
+			# keep the dock area on the rock until the arm locks
+			var area = arm.get("areaDockArea")
+			if area != null and not arm.locked:
+				var off = rock.global_position - area.global_position
+				if off.length() > 20.0:
+					ship.global_position += off
+					ship.linear_velocity = rock.linear_velocity
+					ship.reset_physics_interpolation()
+			if claw.result != "":
+				if claw.result == "granted":
+					claw.state = "hold"
+					claw.until = now + CLAW_HOLD
+				else:
+					_clawEnd(arm, claw.result, now)
+			elif now > claw.until:
+				_clawEnd(arm, "nolock" if not arm.locked else "nolock:locked-no-answer", now)
+		"hold":
+			if now >= holdLogAt:
+				holdLogAt = now + 1.0
+				var rock = _rs().nodeOf(claw.id)
+				if rock != null:
+					var g = CurrentGame.globalCoords(rock.global_position)
+					Debug.l("COOP: BOT claw holding id=%s at %.0f,%.0f locked=%s mine=%s" % [claw.id, g.x, g.y, arm.locked, _own().mine.has(claw.id)])
+			if now >= claw.until and not (keepLast and trial >= trials):
+				_clawEnd(arm, "", now)
+
+func _clawEnd(arm, result, now):
+	if result != "":
+		Debug.l("COOP: BOT claw trial=%d id=%s result=%s" % [trial, claw.id, result])
+		if keepLast and attempts < MAX_ATTEMPTS:
+			attempts += 1
+			skipIds[claw.id] = true
+			trial -= 1   # hold mode needs a rock in the claw: try again with another rock
+	results.erase(claw.id)
+	arm.enabled = false
+	claw = {"state": "idle", "id": "", "until": now + CLAW_GAP, "result": ""}
+	if trial >= trials:
+		Debug.l("COOP: BOT claw done, %d trials" % trials)
+
+func _pickClawRock(ship) -> String:
+	var rs = _rs()
+	var best = ""
+	var bestD = 0.0
+	for id in rs.tracked:
+		var n = rs.tracked[id].n
+		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) 				or skipIds.has(id):
+			continue
+		var d = n.global_position.distance_to(ship.global_position)
+		if best == "" or d < bestD:
+			best = id
+			bestD = d
+	return best
+
 func _onGranted(id):
+	if mode == "claw":
+		if claw.id == id and claw.state == "reach":
+			claw.result = "granted"
+			Debug.l("COOP: BOT claw trial=%d id=%s result=granted" % [trial, id])
+		return
 	if not results.has(id):
 		return
 	Debug.l("COOP: BOT race trial=%d id=%s result=granted" % [results[id], id])
@@ -163,6 +304,10 @@ func _onGranted(id):
 	holding[id] = _secs() + RACE_HOLD
 
 func _onDenied(id, why):
+	if mode == "claw":
+		if claw.id == id and claw.state == "reach":
+			claw.result = "denied:" + str(why)
+		return
 	if not results.has(id):
 		return
 	Debug.l("COOP: BOT race trial=%d id=%s result=denied:%s" % [results[id], id, why])

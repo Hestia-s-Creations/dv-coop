@@ -25,10 +25,13 @@ var pending = {}      # member: id -> {at (s), why}
 var mine = {}         # member: id -> node, rocks this machine owns (not as authority)
 var heldHere = {}     # authority: id -> why, rocks the authority's own player is touching
 var tomb = {}         # authority: id -> time (s) it was consumed or fractured
+var reasons = {}      # id -> {why: true}: which local systems touch it (claw, hold, mpu, ...); released when empty
+var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run when granted
 var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta], ...]
 var streamAccum = 0.0
 var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
+var lastAuth = -1     # member: the authority we last reported our rocks to (o.list)
 
 # conservation (authority): every rock that entered and left this field, by reason
 var cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -36,7 +39,7 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
-	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev"]:
+	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	call_deferred("_hook")
 
@@ -84,8 +87,12 @@ func touch(node, why) -> bool:
 	if not _inCell() or node == null or not node.has_meta("dvnet"):
 		return true
 	var id = node.get_meta("dvnet")
+	if not reasons.has(id):
+		reasons[id] = {}
+	reasons[id][why] = true
 	if _isAuthority():
 		if owners.has(id):
+			reasons.erase(id)
 			emit_signal("denied", id, "held")
 			return false
 		heldHere[id] = why
@@ -112,6 +119,11 @@ func untouch(node, why):
 	if node == null or not is_instance_valid(node) or not node.has_meta("dvnet"):
 		return
 	var id = node.get_meta("dvnet")
+	if reasons.has(id):
+		reasons[id].erase(why)
+		if not reasons[id].empty():
+			return   # another local system still touches it (e.g. the claw fed it into the hold)
+		reasons.erase(id)
 	if heldHere.has(id):
 		heldHere.erase(id)
 		return
@@ -137,6 +149,80 @@ func _resumeCorrection(id):
 	var t = _rs().trackedState(id)
 	if t != null:
 		t.erase("hold")
+
+# ---------------------------------------------------------------- cargo hold and consumption (hooks for ext/ship-ctrl.gd)
+
+static func _isOtherPlayers(body) -> bool:
+	return body.has_meta("dvnet_puppet") or body.has_meta("dvnet_mirror")
+
+# Stock processEnteringCargoBay is about to count `body` into `ship`'s hold. False: don't count it (yet).
+func holdEnter(ship, body) -> bool:
+	if body == null or not is_instance_valid(body):
+		return false
+	if _isOtherPlayers(body):
+		return false   # never scoop another player's ship, pod or drone
+	if not _inCell() or not body.has_meta("dvnet") or not _rs().isRock(body):
+		return true
+	var ok = touch(body, "hold")
+	if not ok and pending.has(body.get_meta("dvnet")):
+		holdRetry[body.get_meta("dvnet")] = ship
+	return ok
+
+# Stock processExitingCargoBay just ran for `body`.
+func holdExit(ship, body):
+	if body == null or not is_instance_valid(body) or not body.has_meta("dvnet"):
+		return
+	holdRetry.erase(body.get_meta("dvnet"))
+	if not ship.cargo.has(body):
+		untouch(body, "hold")
+
+# Stock claimCargo is about to turn `ship`'s hold into ship-state numbers and free the bodies.
+func beforeClaimCargo(ship):
+	for item in ship.cargo:
+		if is_instance_valid(item) and item.has_meta("dvnet") and _rs().isRock(item):
+			eat(item, "claimCargo")
+
+# `node`, a rock we own, is about to be freed into ship state (claimCargo, MPU). Tell the authority once.
+func eat(node, why):
+	if not _inCell() or node == null or not node.has_meta("dvnet"):
+		return
+	var id = node.get_meta("dvnet")
+	var comp = node.getComposition().duplicate() if node.has_method("getComposition") else {}
+	reasons.erase(id)
+	if _isAuthority():
+		if owners.has(id):
+			Debug.l("COOP: OWN refusing to eat %s: owned by %s" % [id, owners[id]])
+			return
+		heldHere.erase(id)
+		_tombstone(id, comp, why)
+		return
+	if not mine.has(id):
+		Debug.l("COOP: OWN eat %s (%s) but we don't own it" % [id, why])
+		return
+	mine.erase(id)
+	net.send(_cell().authority(), {"t": "o.eat", "id": id, "e": epochOf(id), "c": comp, "why": why}, true)
+	Debug.l("COOP: OWN eat %s (%s) %s" % [id, why, comp])
+
+func _tombstone(id, comp, why):
+	tomb[id] = _now()
+	eatenIds[id] = true
+	for k in comp:
+		cons.eaten[k] = cons.eaten.get(k, 0.0) + float(comp[k])
+	Debug.l("COOP: OWN eaten %s (%s) %s" % [id, why, comp])
+
+func _on_o_eat(from, msg):
+	if not _isAuthority():
+		return
+	var id = str(msg.get("id"))
+	if owners.get(id) != from or int(msg.get("e", -1)) != epochOf(id):
+		Debug.l("COOP: OWN stale eat %s from %s (owner %s e=%d)" % [id, from, owners.get(id), epochOf(id)])
+		return
+	owners.erase(id)
+	var comp = msg.get("c", {})
+	_tombstone(id, comp if comp is Dictionary else {}, str(msg.get("why")))
+	var node = _rs().untrack(id)
+	if node != null:
+		Tool.remove(node)   # its exit sends r.d to every member that knows it
 
 # ---------------------------------------------------------------- authority: arbitration
 
@@ -225,6 +311,11 @@ func _on_o_ok(from, msg):
 		node.reset_physics_interpolation()
 	Debug.l("COOP: OWN granted %s e=%d" % [id, e])
 	emit_signal("granted", id)
+	if holdRetry.has(id):
+		var ship = holdRetry[id]
+		holdRetry.erase(id)
+		if is_instance_valid(ship) and is_instance_valid(node):
+			ship.processEnteringCargoBay(node)   # the stock entry we held back, now on a rock we own
 
 func _on_o_no(from, msg):
 	var id = str(msg.get("id"))
@@ -234,6 +325,8 @@ func _on_o_no(from, msg):
 		owners[id] = int(msg.owner)
 	if pending.has(id):
 		pending.erase(id)
+		reasons.erase(id)
+		holdRetry.erase(id)
 		_resumeCorrection(id)
 		Debug.l("COOP: OWN denied %s (%s)" % [id, msg.get("why")])
 		emit_signal("denied", id, str(msg.get("why")))
@@ -257,13 +350,14 @@ func _on_o_u(from, msg):
 	if not (l is Array):
 		return
 	var rs = _rs()
+	var at = rs.localSampleMs(from, msg.get("ts", -1))
 	for it in l:
 		if not (it is Array) or it.size() != 6:
 			continue
 		var id = str(it[0])
 		if ownerOf(id) != from or int(it[1]) != epochOf(id):
 			continue
-		rs.updateTracked(id, it[2], float(it[3]), it[4], float(it[5]))
+		rs.updateTracked(id, it[2], float(it[3]), it[4], float(it[5]), at)
 
 # Positions of the rocks this member owns, to everyone else in the cell. (Angular velocity rides in r as rot only;
 # the tracked copy's angular velocity is corrected toward 0 extra spin, which is fine at 20 Hz.)
@@ -280,7 +374,7 @@ func _stream():
 	if l.empty():
 		return
 	var c = _cell()
-	var msg = {"t": "o.u", "l": l}
+	var msg = {"t": "o.u", "ts": OS.get_system_time_msecs(), "l": l}
 	for p in c.members():
 		if p != net.myId:
 			net.send(p, msg, false)
@@ -353,7 +447,10 @@ func _physics_process(delta):
 		streamAccum = 0.0
 		_stream()
 	_flushDamage()
+	if role == "member":
+		_reportOwned()
 	if role == "authority":
+		_reownLost()
 		for id in tomb.keys():
 			if now - tomb[id] > TOMB_SECONDS:
 				tomb.erase(id)
@@ -364,20 +461,119 @@ func _physics_process(delta):
 
 func _changeRole(from, to):
 	Debug.l("COOP: OWN role %s -> %s (mine=%d owned-by-players=%d)" % [from, to, mine.size(), owners.size()])
-	# M4 TODO (gates 3/4): re-own on disconnect, o.list on handoff. For now a role change resets the table.
-	for id in mine.keys():
-		var n = mine[id]
-		if is_instance_valid(n) and to == "member":
-			_rs().track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
-	mine.clear()
-	pending.clear()
-	heldHere.clear()
-	owners.clear()
-	epoch.clear()
+	var rs = _rs()
+	if from == "member" and to == "authority":
+		# Handoff: we already know every owner from o.chg. RockSync just turned all our tracked copies into simulated
+		# rocks; the ones a player owns go back to tracked (corrected toward that player's o.u). Our own become ours as
+		# the authority. o.list from the members then confirms the table.
+		for id in mine.keys():
+			heldHere[id] = "promoted"
+			owners.erase(id)
+		mine.clear()
+		for id in owners.keys():
+			var n = rs.nodeOf(id)
+			if n == null or owners[id] == net.myId:
+				owners.erase(id)
+				continue
+			rs.track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
+		pending.clear()
+		Debug.l("COOP: OWN promoted: keeping %d player-owned rocks, %d held here" % [owners.size(), heldHere.size()])
+	else:
+		# rocks other players owned: they stay in our field at their last streamed state (RockSync keeps or promotes
+		# them), so log where, for the holder-loss gates
+		for id in owners.keys():
+			if owners[id] != net.myId:
+				var n = rs.nodeOf(id)
+				if n != null:
+					var g = CurrentGame.globalCoords(n.global_position)
+					Debug.l("COOP: OWN keeps %s (owner %s gone from our cell) at %.0f,%.0f" % [id, owners[id], g.x, g.y])
+		for id in mine.keys():
+			var n = mine[id]
+			if is_instance_valid(n) and to == "member":
+				rs.track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
+		mine.clear()
+		pending.clear()
+		heldHere.clear()
+		owners.clear()
+		epoch.clear()
+	lastAuth = -1
 	role = to
 	cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
 	if to == "authority":
 		cons.born = _liveRocks().size()   # baseline: everything already in the field
+
+# ---------------------------------------------------------------- disconnect and handoff
+
+# Authority: a player who owns rocks has left the cell (quit, crashed, flew off). Its rocks come back to us at their
+# last streamed state (the tracked copy is already there).
+func _reownLost():
+	var c = _cell()
+	var members = c.members()
+	var lost = {}
+	for id in owners.keys():
+		var p = owners[id]
+		if p != net.myId and not (p in members):
+			lost[id] = p
+	if lost.empty():
+		return
+	var rs = _rs()
+	for id in lost:
+		var n = rs.untrack(id)
+		owners.erase(id)
+		var e = epochOf(id) + 1
+		epoch[id] = e
+		_broadcast({"t": "o.chg", "id": id, "owner": net.myId, "e": e}, -1)
+		Debug.l("COOP: OWN reown %s from lost %s e=%d at %s" % [id, lost[id], e, CurrentGame.globalCoords(n.global_position) if n != null else "?"])
+
+# Member: whenever the authority changes, tell the new one which rocks we own.
+func _reportOwned():
+	var c = _cell()
+	var a = c.authority()
+	if a == lastAuth:
+		return
+	lastAuth = a
+	var l = []
+	for id in mine:
+		var n = mine[id]
+		if is_instance_valid(n):
+			l.append([id, epochOf(id), n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity])
+	net.send(a, {"t": "o.list", "l": l}, true)
+	if not l.empty():
+		Debug.l("COOP: OWN o.list to %s: %d rocks" % [a, l.size()])
+
+# Authority: a member's list of rocks it owns. Accept what we didn't know (it holds them, the stream proves it);
+# drop table entries for that member that it no longer claims.
+func _on_o_list(from, msg):
+	if not _isAuthority():
+		return
+	var l = msg.get("l")
+	if not (l is Array):
+		return
+	var rs = _rs()
+	var claimed = {}
+	for it in l:
+		if not (it is Array) or it.size() != 6:
+			continue
+		var id = str(it[0])
+		claimed[id] = true
+		if owners.get(id) == from:
+			continue
+		var n = rs.nodeOf(id)
+		if n == null or tomb.has(id) or (owners.has(id) and owners[id] != from):
+			continue
+		owners[id] = from
+		epoch[id] = max(epochOf(id), int(it[1]))
+		rs.track(id, n, it[2], float(it[3]), it[4], float(it[5]))
+		_broadcast({"t": "o.chg", "id": id, "owner": from, "e": epochOf(id)}, from)
+		Debug.l("COOP: OWN o.list adopts %s owned by %s e=%d" % [id, from, epochOf(id)])
+	for id in owners.keys():
+		if owners[id] == from and not claimed.has(id):
+			var n = rs.untrack(id)
+			owners.erase(id)
+			epoch[id] = epochOf(id) + 1
+			_broadcast({"t": "o.chg", "id": id, "owner": net.myId, "e": epochOf(id)}, -1)
+			Debug.l("COOP: OWN o.list: %s no longer held by %s, back to the authority" % [id, from])
+	Debug.l("COOP: OWN o.list from %s: %d rocks, table now %d player-owned" % [from, claimed.size(), owners.size()])
 
 # ---------------------------------------------------------------- conservation (authority)
 
@@ -385,9 +581,24 @@ func _onRockBorn(id, node):
 	if role == "authority":
 		cons.born += 1
 
+const DISABLED_LAYER = 2147483648   # the MPU sets this collision layer on a rock just before freeing it
+
 func _onRockGone(id, node):
+	if role == "member" and mine.has(id):
+		# a rock we own is leaving our field
+		if node.get("fracturing") == true:
+			Debug.l("COOP: OWN %s fractured while ours (shards via o.new: M4 TODO)" % id)
+			mine.erase(id)
+		elif node.collision_layer == DISABLED_LAYER:
+			eat(node, "mpu")
+		else:
+			_release(id, node, "left-field")
+		return
 	if role != "authority":
 		return
+	if node.collision_layer == DISABLED_LAYER and not eatenIds.has(id) and not owners.has(id):
+		_tombstone(id, node.getComposition().duplicate() if node.has_method("getComposition") else {}, "mpu")
+		heldHere.erase(id)
 	cons.gone += 1
 	var why = "despawn"
 	if eatenIds.has(id):

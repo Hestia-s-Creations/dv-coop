@@ -10,9 +10,11 @@ extends "res://ships/modules/DockingArm.gd"
 # Never a target: other players' ships (meta dvnet_puppet) and mirrors of other players' drones / NPCs (dvnet_mirror).
 
 const DENY_COOLDOWN = 2.0
+const RELEASE_GRACE = 0.5   # s the arm must stay unlocked before we hand the rock back (the stock lock flickers)
 
 var coopLocked = null       # the rock we last reported as touched
 var coopCooldown = {}       # net id -> time (s) until which we don't target it again
+var coopUnlockedSince = -1.0
 
 func _coopOwn():
 	if ModLoader.has_meta("dvcoop"):
@@ -51,12 +53,23 @@ func _physics_process(delta):
 	if own == null:
 		return
 	var now = target if (locked and target != null and is_instance_valid(target)) else null
-	if now != coopLocked:
-		if coopLocked != null and is_instance_valid(coopLocked):
-			own.untouch(coopLocked, "claw")
-		coopLocked = now
-		if now != null:
-			own.touch(now, "claw")
+	var t = OS.get_ticks_msec() / 1000.0
+	if now == coopLocked:
+		coopUnlockedSince = -1.0
+		return
+	if now == null and coopLocked != null and is_instance_valid(coopLocked):
+		# let go only after RELEASE_GRACE without a lock
+		if coopUnlockedSince < 0:
+			coopUnlockedSince = t
+			return
+		if t - coopUnlockedSince < RELEASE_GRACE:
+			return
+	coopUnlockedSince = -1.0
+	if coopLocked != null and is_instance_valid(coopLocked):
+		own.untouch(coopLocked, "claw")
+	coopLocked = now
+	if now != null:
+		own.touch(now, "claw")
 
 func _coopDenied(id, reason):
 	if coopLocked != null and is_instance_valid(coopLocked) and coopLocked.get_meta("dvnet") == id:

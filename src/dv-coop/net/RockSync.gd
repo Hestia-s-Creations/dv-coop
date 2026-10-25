@@ -71,6 +71,8 @@ func _ready():
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
 	net.on("r.u", self, "_onUpdate")
+	net.on("r.clk", self, "_onClk")
+	net.on("r.clk2", self, "_onClk2")
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 
@@ -110,6 +112,66 @@ func promoteToAuthority():
 	role = "authority"
 	Debug.l("COOP: RS promoted to authority, %d rocks now simulated here" % n)
 
+# ---------------------------------------------------------------- clocks (M4: extrapolate from the sender's sample time)
+#
+# Streams (r.u, o.u) carry the sender's wall-clock ms at sampling. Every CLOCK_EVERY s each machine pings the other cell
+# members (r.clk / r.clk2) and keeps, per peer, the offset (their clock - ours) from the lowest-RTT sample of the last
+# CLOCK_KEEP. A stream's sample time in our clock is then ts - offset, so a tracked copy is extrapolated from when the
+# owner sampled it, not from when the packet happened to arrive (M3 known issue: ~6 px at 95 px/s on one PC).
+
+const CLOCK_EVERY = 2.0
+const CLOCK_KEEP = 8
+var clocks = {}      # peer -> [[rtt, offset], ...] newest last
+var clockAccum = 0.0
+
+func _ms() -> int:
+	return OS.get_system_time_msecs()
+
+func clockOffset(peer):
+	var l = clocks.get(peer)
+	if l == null or l.empty():
+		return null
+	var best = l[0]
+	for e in l:
+		if e[0] < best[0]:
+			best = e
+	return best
+
+# A sender's sample time in our wall clock. Without a measured offset, assume half the CoopNet ping ago.
+func localSampleMs(peer, ts) -> int:
+	var now = _ms()
+	if ts == null or int(ts) < 0:
+		return now
+	var b = clockOffset(peer)
+	if b == null:
+		return now - int(max(0, net.stats.rtt_ms) / 2)
+	return int(min(now, int(ts) - b[1]))
+
+func _clockTick(delta, cell):
+	clockAccum += delta
+	if clockAccum < CLOCK_EVERY:
+		return
+	clockAccum = 0.0
+	for p in cell.members():
+		if p != net.myId:
+			net.send(p, {"t": "r.clk", "a": _ms()}, false)
+
+func _onClk(from, msg):
+	net.send(from, {"t": "r.clk2", "a": msg.get("a", 0), "b": _ms()}, false)
+
+func _onClk2(from, msg):
+	var now = _ms()
+	var a = int(msg.get("a", 0))
+	var rtt = now - a
+	if rtt < 0 or rtt > 2000:
+		return
+	var off = int(msg.get("b", 0)) - a - rtt / 2.0
+	if not clocks.has(from):
+		clocks[from] = []
+	clocks[from].append([rtt, off])
+	if clocks[from].size() > CLOCK_KEEP:
+		clocks[from].pop_front()
+
 # ---------------------------------------------------------------- ownership hooks (M4, used by Own.gd)
 
 func nodeOf(id):
@@ -135,16 +197,16 @@ func track(id, node, p, r, v, w):
 	if node == null or not is_instance_valid(node):
 		return
 	node.set_meta("dvnet_tracked", true)
-	tracked[id] = {"n": node, "p": p, "r": r, "v": v, "w": w, "at": OS.get_ticks_msec()}
+	tracked[id] = {"n": node, "p": p, "r": r, "v": v, "w": w, "at": _ms()}
 
-func updateTracked(id, p, r, v, w):
+func updateTracked(id, p, r, v, w, at = -1):
 	var t = tracked.get(id)
 	if t != null:
 		t.p = p
 		t.r = r
 		t.v = v
 		t.w = w
-		t.at = OS.get_ticks_msec()
+		t.at = at if at >= 0 else _ms()
 
 # Authority: does it currently stream this rock with r.u (i.e. no player owns it)?
 func isStreamed(id) -> bool:
@@ -289,7 +351,7 @@ func _build(rc):
 		_logMineral("built", id, n)
 	else:
 		n.rnd = rc[8]
-	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": OS.get_ticks_msec()}
+	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": _ms()}
 
 var mineralsLogged = {}
 func _logMineral(what, id, n):
@@ -336,6 +398,8 @@ func _physics_process(delta):
 	if want != role:
 		_changeRole(role, want)
 
+	if role != "solo":
+		_clockTick(delta, cell)
 	match role:
 		"authority":
 			_authorityTick(delta, cell)
@@ -536,12 +600,12 @@ func _sendUpdates(peer, rv, at, near, far, g):
 		ids.append(id)
 		f.append_array([p.x, p.y, node.global_rotation, v.x, v.y, node.angular_velocity])
 		if ids.size() >= BATCH:
-			_out(peer, {"t": "r.u", "g": g, "i": ids, "f": f}, false)
+			_out(peer, {"t": "r.u", "g": g, "ts": _ms(), "i": ids, "f": f}, false)
 			sent.u += ids.size()
 			ids = PoolStringArray()
 			f = PoolRealArray()
 	if ids.size() > 0:
-		_out(peer, {"t": "r.u", "g": g, "i": ids, "f": f}, false)
+		_out(peer, {"t": "r.u", "g": g, "ts": _ms(), "i": ids, "f": f}, false)
 		sent.u += ids.size()
 
 func _out(peer, msg, reliable):
@@ -580,7 +644,7 @@ func _onSpawn(from, msg):
 			t.r = rc[4]
 			t.v = rc[5]
 			t.w = rc[6]
-			t.at = OS.get_ticks_msec()
+			t.at = _ms()
 		elif not bodies.has(id):
 			_build(rc)
 	if msg.get("last", false) and snapSeen != null:
@@ -618,7 +682,7 @@ func _onUpdate(from, msg):
 	var f = msg.get("f")
 	if not (ids is PoolStringArray and f is PoolRealArray and f.size() == ids.size() * 6):
 		return
-	var now = OS.get_ticks_msec()
+	var now = localSampleMs(from, msg.get("ts", -1))
 	var i = 0
 	for id in ids:
 		if tracked.has(id):
@@ -651,7 +715,7 @@ func _memberTick(delta, cell):
 # Pull every tracked copy toward its owner's last reported state. Members track the authority's rocks; the authority
 # tracks rocks a player owns (M4). A copy whose claim is pending here (Own sets `hold`) is left alone.
 func _correct():
-	var now = OS.get_ticks_msec()
+	var now = _ms()
 	for id in tracked:
 		var t = tracked[id]
 		var n = t.n
