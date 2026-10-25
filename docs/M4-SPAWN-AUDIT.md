@@ -162,3 +162,20 @@ Damage entry points on rocks: `asteroid.gd` `applyEnergyDamage` 289, `applyKinet
 - Dialog (comms/ConversationPlayer.gd): POIs (679-690), `addShip` (738), `setStory` (809, 818), money and insurance (822, 828),
   crew (834-873). Runs on whichever machine owns the NPC being talked to; the economy effects belong to the talking player.
 - Not traced: whether fracture shards (`spawned = false`) change the persisted density map (`state.density`).
+
+## NPCs a member already has when it joins a cell (M4)
+
+The joining member frees its own NPCs quietly (the field's `kill()`, the stock despawn path: no `vanish()`, so no
+`forgetTransponser` and no lifepod) except those bound to its save or story, which it keeps and streams to the cell as
+member-owned NPCs (Npc.gd `_onCellJoined`). What marks an NPC as save- or story-bound, checked in the 1.90.12 source:
+
+| Candidate | Keyed per NPC ship? | Use |
+| --- | --- | --- |
+| `state.transponders.lookup/hashes` | per transponder, but **every** new NPC is registered (`getTransponder`, CurrentGame.gd :1040-1080) | can't distinguish; not used |
+| `state.shipNames` | per transponder, but written for every NPC whose name is ever shown (`getShipName`, :1030-1036) | not used |
+| `state.agendaStory` | per **crew member** `fullName` (crew agenda quest flags stored/restored, :230-246) | not per ship; not used |
+| `state.encounteredShips` | per ship id/transponder, written when an NPC talks to the player (`recordEncounter`, :553-567, ship-ctrl.gd :3915) | keep if present |
+| `state.dispositions` | per transponder (`getDispositionReferenceOfTransponder`, :535-539; creates an empty entry on read) | keep if non-empty; read with `.get`, never through the accessor |
+| `essential` | ship-ctrl export, also true while `talkingWith != null` (ship-ctrl.gd :77-81) | keep |
+| faction `"player"`, docked / held by my ship | my drones and fleet, temporary cargo | keep |
+
