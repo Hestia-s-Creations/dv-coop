@@ -244,6 +244,9 @@ func _decide(comp, now):
 			_leave("alone in view")
 		return
 
+	if role == Role.SOLO and _inCutscene():
+		return   # no forming or joining while my own dive cutscene flies its corridor
+
 	var win = _winner(comp, now)
 	if win != lastWinner:
 		_log("winner of %s is %s" % [comp, win])
@@ -359,6 +362,11 @@ func _join(from, msg):
 	_log("JOINED cell %s, authority %s, members=%s gen=%d" % [cid, auth, cellMembers, originGen])
 	emit_signal("cell_joined", auth)
 	net.send(auth, {"t": "c.join", "cid": cid, "gen": originGen}, true)
+
+# The stock spawner keeps the dive corridor clear; an authority's field doesn't, so a diving ship stays solo.
+func _inCutscene():
+	var ship = _ship()
+	return ship != null and ship.get("cutscene") == true
 
 func _setSpawner(on):
 	var f = _field()
@@ -528,6 +536,8 @@ func _onState(from, msg):
 		return
 	_heard(from)
 	_noteAd(from, msg)
+	if role == Role.SOLO and _inCutscene():
+		return   # join once the dive cutscene is over; the authority resends c.state every 2 s
 	var listed = msg.members
 	if not listed.has(net.myId):
 		if role == Role.MEMBER and from == auth:
