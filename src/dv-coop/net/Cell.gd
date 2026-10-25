@@ -342,6 +342,8 @@ func _leave(why, to = 0):
 	if role == Role.MEMBER:
 		if not lost.has(auth) and net.peers.has(auth):
 			net.send(auth, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
+		# follow-ups armed before or during membership would land next to me, stale
+		_dropQueuedOddities("leaving a cell")
 	else:
 		# resign: with to == 0 the lowest of the rest promotes and keeps the cell's rocks
 		net.sendTo(cellMembers, {"t": "c.leave", "cid": cid, "gen": originGen, "to": to}, true)
@@ -371,6 +373,7 @@ func _join(from, msg):
 	ghost = null
 	_adopt(msg.off)
 	_setSpawner(false)
+	_dropQueuedOddities("joining a cell")
 	_log("JOINED cell %s, authority %s, members=%s gen=%d" % [cid, auth, cellMembers, originGen])
 	emit_signal("cell_joined", auth)
 	net.send(auth, {"t": "c.join", "cid": cid, "gen": originGen}, true)
@@ -379,6 +382,27 @@ func _join(from, msg):
 func _inCutscene():
 	var ship = _ship()
 	return ship != null and ship.get("cutscene") == true
+
+# Story follow-ups (FlightForRescue, Vilcy timers) queue bodies in TheRing.spawnNow, and made-but-unplaced events
+# wait in unspawnedOddities; only the spawner drains them. A member must not carry them into or out of a cell.
+func _dropQueuedOddities(why):
+	var g = net._gameScene()
+	var ring = g.get_node_or_null("TheRing") if g != null else null
+	if ring == null or not ("spawnNow" in ring):
+		return
+	var dropped = 0
+	var bodies = ring.spawnNow.duplicate()
+	for k in ring.unspawnedOddities:
+		var o = ring.unspawnedOddities[k]
+		bodies += o if o is Array else [o]
+	for o in bodies:
+		if o != null and is_instance_valid(o) and not o.is_inside_tree() and not o.is_queued_for_deletion():
+			o.queue_free()
+			dropped += 1
+	ring.spawnNow.clear()
+	ring.unspawnedOddities.clear()
+	ring.unspawnedOdditiesLocation.clear()
+	_log("dropped %d queued oddities (%s)" % [dropped, why])
 
 func _setSpawner(on):
 	var f = _field()
