@@ -183,7 +183,7 @@ member-owned NPCs (Npc.gd `_onCellJoined`). What marks an NPC as save- or story-
 
 How each site is kept off members. "Never instanced" means: a member's spawner is suspended in a cell (so no
 `makeAt` / `spawnNow` / InstanceWithChance), Cell drops queued oddities on joining, RockSync builds only
-`asteroids/class-*` and `asteroids/mineral-*` scenes (RockSync.gd `_isRock`), and Npc.gd builds only Shipyard ships
+`asteroids/class-*` and `asteroids/mineral-*` scenes (RockSync.gd `isRock`), and Npc.gd builds only Shipyard ships
 from a `fullConfig`. So no scene with these `_ready` / event spawners is ever created on a member while it is one.
 
 | # | Site | Status |
