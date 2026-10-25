@@ -170,6 +170,16 @@ func applyHostility(f, amt, broadcast = true, factor = 0.25, includeIndependents
 		return
 	.applyHostility(f, amt, broadcast, factor, includeIndependents)
 
+# The stock setDummy(false) points a non-player ship's disposition at CurrentGame.state.dispositions[transponder],
+# creating that entry in OUR save. A puppet or mirror is someone else's ship: keep its disposition private.
+func setDummy(how, always = false):
+	var id = getId()
+	var had = CurrentGame.state.get("dispositions", {}).has(id)
+	.setDummy(how, always)
+	if netControlled and not had and CurrentGame.state.get("dispositions", {}).has(id):
+		disposition = CurrentGame.state.dispositions[id].duplicate(true)
+		CurrentGame.state.dispositions.erase(id)
+
 func vanish(except = []):
 	if netControlled:
 		if netDying:
