@@ -252,6 +252,8 @@ func _fracCoordinate(c, now):
 			continue
 		if n.get("asteroidClass") == null or n.asteroidClass >= 4 or n.get("splitEnergyThreshold") == null:
 			continue
+		if net.localShip == null or n.global_position.distance_to(net.localShip.global_position) > 10000.0:
+			continue   # stock fracture spawns shards only inside the authority's simulator range (12 km of its ship)
 		var all = true
 		for p in members:
 			if not rs.receivers.has(p) or not rs.receivers[p].known.has(id):
@@ -273,6 +275,9 @@ func _onFrac(from, msg):
 	if mode != "frac" or frac.state != "idle":
 		return
 	frac = {"state": "wait", "trial": int(msg.trial), "id": str(msg.id), "at": int(msg.at), "until": 0.0, "pos": null}
+	var n = _rs().nodeOf(frac.id)
+	if n != null:
+		frac.pos = n.global_position
 
 func _fracMember(now):
 	if noArm:
@@ -341,7 +346,11 @@ func _fracClaim(now):
 			if wall >= frac.at + frac.jit:
 				var n = rs.nodeOf(frac.id)
 				if n == null:
-					_fracDone("neither", "", "parent gone before the claim")
+					# the authority's fracture won: the parent left the stream before our claim. Go for its shards.
+					frac.state = "shards"
+					frac.until = _secs() + FRAC_SHARD_WAIT
+					claw.id = ""
+					claw.result = ""
 					return
 				frac.pos = n.global_position
 				frac.state = "claim"
