@@ -154,11 +154,54 @@ def gate9b(insts):
     return ok, ev
 
 
+def gate9c(insts):
+    """Pre-join oddities: a member's own oddity (a moonlet from a POI) is freed when it joins a cell, and comes back
+    from its POI once the member is solo near it again (check savecheck.sh too: no save file changes)."""
+    ev = []
+    staged = False
+    ok = True
+    for i in insts:
+        lines = i.lines
+        poi = [n for n, l in enumerate(lines) if "COOP: NPC dev: test POI" in l]
+        if not poi:
+            continue
+        staged = True
+        ev_name = re.search(r"\(event (\S+)\)", lines[poi[0]]).group(1)
+        spawns = [n for n, l in enumerate(lines) if re.search(r"(Location-based oddity|Re-spawning) %s" % re.escape(ev_name), l)]
+        freed = [(n, re.search(r"freed (\d+) oddities of mine (\[.*?\]), kept (\d+) (\[.*\])", l)) for n, l in enumerate(lines)
+                 if "joined: freed" in l and "oddities" in l]
+        back = [n for n, l in enumerate(lines) if "COOP: NPC dev: returned to" in l]
+        first = [n for n in spawns if n > poi[0]]
+        ev.append("%s: POI for %s; oddity spawned %d time(s)" % (i.name(), ev_name, len(spawns)))
+        if not first or not freed:
+            ok = False
+            ev.append("FAIL: the oddity never spawned before joining, or the member never joined")
+            continue
+        fn, fm = freed[0]
+        ev.append("  joined: freed %s %s, kept %s %s" % (fm.group(1), fm.group(2), fm.group(3), fm.group(4)))
+        if fn < first[0] or int(fm.group(1)) < 1:
+            ok = False
+            ev.append("FAIL: nothing freed after the oddity spawned")
+        if not back:
+            ok = False
+            ev.append("FAIL: the member never returned to the POI (--coop-dev-return)")
+            continue
+        again = [n for n in spawns if n > back[0]]
+        ev.append("  returned to the POI; oddity back from its POI: %s" % bool(again))
+        if not again:
+            ok = False
+            ev.append("FAIL: the oddity did not come back after leaving the cell")
+    if not staged:
+        return False, ["FAIL: not staged (use --coop-dev-poi=<event> and --coop-dev-return=<s> on the joining member)"]
+    return ok, ev
+
+
 GATES = {
     7: gate7,
     8: gate8,
     9: gate9,
     "9b": gate9b,
+    "9c": gate9c,
 }
 
 
