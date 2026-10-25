@@ -110,6 +110,11 @@ func _ready():
 		set_physics_process(false)
 
 func _exit_tree():
+	# Tell everyone we're going, so cells hand over at once instead of waiting out the heartbeat.
+	if peers.size() > 0 and transport != Transport.NONE:
+		_broadcast({"t": "bye"}, true)
+		if enet != null:
+			enet.poll()
 	if ModLoader.has_meta("dvcoop"):
 		ModLoader.remove_meta("dvcoop")
 
