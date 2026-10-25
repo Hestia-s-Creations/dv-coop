@@ -21,8 +21,10 @@ extends Node
 #
 # Dev: --coop-dev-explode=<s>  s seconds after my dive cutscene ends, blow up my own ship (gate 8).
 #      --coop-dev-pirate=<s>   as cell authority, s seconds into the cell, spawn a pirate TRTL near a member (gate 9).
-#      --coop-dev-fireall=<s>  s seconds after my dive cutscene ends, hold every non-thruster command (weapons,
-#                              claws, drones) for 10 s, so the puppets of my ship replay them (gate 7).
+#      --coop-dev-fireall=<s>[,<d>]  s seconds after my dive cutscene ends, hold every non-thruster command (weapons,
+#                              claws, drones) for d seconds (default 10), so the puppets of my ship replay them (gate 7).
+#      --coop-dev-explode-member=<s>  like --coop-dev-explode, but only while I'm a cell member (gate 8: the blast is
+#                              then simulated by the authority, not by the dying ship).
 #      --coop-dev-story-npc    while I'm solo after my dive, spawn two NPC TRTLs beside me, one marked essential (a
 #                              story NPC), one plain; once I've joined a cell, bring the kept one next to me (gate 9
 #                              sub-check: the plain one is freed on joining, the essential one is kept and seen).
@@ -60,6 +62,8 @@ var storyKept = null
 var storyMoved = false
 var devLogAccum = 0.0
 var fireAfter = -1.0
+var fireFor = 10.0
+var explodeMemberOnly = false
 var fireClock = 0.0
 var counts = {}      # 5 s summary: puppet systems replayed, hits turned into effects only
 var countAccum = 0.0
@@ -83,7 +87,13 @@ func _ready():
 		elif arg == "--coop-dev-story-npc":
 			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
-			fireAfter = float(arg.substr(19))
+			var fa = arg.substr(19).split(",")
+			fireAfter = float(fa[0])
+			if fa.size() > 1:
+				fireFor = float(fa[1])
+		elif arg.begins_with("--coop-dev-explode-member="):
+			explodeAfter = float(arg.substr(26))
+			explodeMemberOnly = true
 
 func _hookCell():
 	var cell = net.get_node_or_null("Cell")
@@ -242,7 +252,7 @@ func _devFireTick(delta):
 	if ship == null or not is_instance_valid(ship) or ship.cutscene or not ship.get("setup"):
 		return
 	fireClock += delta
-	if fireClock >= fireAfter and fireClock < fireAfter + 10.0:
+	if fireClock >= fireAfter and fireClock < fireAfter + fireFor:
 		if not Engine.has_meta("dvcoop_dev_fireall"):
 			# the same nodes the stock fireMatching walks (ship-ctrl.gd :2641), minus thrusters
 			var cmds = []
@@ -252,7 +262,7 @@ func _devFireTick(delta):
 					if cmd is String and cmd != "" and not cmds.has(cmd):
 						cmds.append(cmd)
 			Engine.set_meta("dvcoop_dev_fireall", cmds)
-			_log("dev: firing %s on my ship for 10 s" % [cmds])
+			_log("dev: firing %s on my ship for %.0f s" % [cmds, fireFor])
 	elif Engine.has_meta("dvcoop_dev_fireall"):
 		Engine.remove_meta("dvcoop_dev_fireall")
 		_log("dev: stopped firing")
@@ -298,6 +308,9 @@ func _devExplodeTick(delta):
 		return
 	explodeClock += delta
 	if explodeClock < explodeAfter:
+		return
+	var cell = _cell()
+	if explodeMemberOnly and (cell == null or not cell.inCell() or cell.isAuthority()):
 		return
 	exploded = true
 	for c in ship.get_children():
