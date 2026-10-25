@@ -132,17 +132,40 @@ def gate9(insts):
     return ok, ev
 
 
+def gate9b(insts):
+    """NPC death: an NPC the authority runs dies there (one lifepod, on the runner) and its mirrors play the explosion
+    as a picture (no lifepod, no vanish write on members)."""
+    ev = []
+    killed = [(i, m) for i in insts for m in i.grep(r"COOP: NPC dev: blowing up NPC (\S+) (\S+)")]
+    if not killed:
+        return False, ["FAIL: no NPC was blown up (use --coop-dev-pirate with --coop-dev-kill-npc)"]
+    ok = True
+    for i, m in killed:
+        nid = m.group(1)
+        pods = {o.name(): o.count(r"Exploded \[.*\] with lifepod") - (1 if o.count(r"COOP: NPC s\.die sent") else 0) for o in insts}
+        boom = [o.name() for o in insts if o is not i and o.count(r"COOP: NPC mirror %s exploding" % re.escape(nid))]
+        ev.append("%s blew up %s; mirrors exploding on %s; NPC lifepods per machine %s" % (i.name(), nid, boom, pods))
+        if not boom:
+            ok = False
+            ev.append("FAIL: no member played the NPC's explosion")
+        if pods.get(i.name(), 0) != 1 or any(n for k, n in pods.items() if k != i.name()):
+            ok = False
+            ev.append("FAIL: the NPC's lifepod must exist exactly once, on its runner")
+    return ok, ev
+
+
 GATES = {
     7: gate7,
     8: gate8,
     9: gate9,
+    "9b": gate9b,
 }
 
 
 def main(argv):
-    want = sorted(GATES)
+    want = list(GATES)
     if argv and argv[0] == "--gates":
-        want = [int(g) for g in argv[1].split(",")]
+        want = [int(g) if g.isdigit() else g for g in argv[1].split(",")]
         argv = argv[2:]
     files = sorted({f for g in argv for f in glob.glob(os.path.expanduser(g))})
     if not files:
@@ -154,11 +177,11 @@ def main(argv):
     failed = False
     for g in want:
         if g not in GATES:
-            print("gate %d: not implemented here" % g)
+            print("gate %s: not implemented here" % g)
             continue
         ok, ev = GATES[g](insts)
         failed = failed or not ok
-        print("gate %d: %s  %s" % (g, "PASS" if ok else "FAIL", GATES[g].__doc__.strip().split(":")[0]))
+        print("gate %s: %s  %s" % (g, "PASS" if ok else "FAIL", GATES[g].__doc__.strip().split(":")[0]))
         for e in ev:
             print("    " + e)
     if errors:

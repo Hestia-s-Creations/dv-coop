@@ -28,6 +28,8 @@ extends Node
 #      --coop-dev-story-npc    while I'm solo after my dive, spawn two NPC TRTLs beside me, one marked essential (a
 #                              story NPC), one plain; once I've joined a cell, bring the kept one next to me (gate 9
 #                              sub-check: the plain one is freed on joining, the essential one is kept and seen).
+#      --coop-dev-kill-npc=<s> as authority, s seconds after the dev pirate spawned, blow it up with a lifepod set
+#                              (audit site: an NPC's lifepod exists once, on the machine running the NPC).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -54,6 +56,9 @@ var hits = {}       # member: owner -> [entries] forwarded this tick
 var pirateAfter = -1.0
 var pirateClock = 0.0
 var pirateDone = false
+var devPirate = null
+var killAfter = -1.0
+var killClock = 0.0
 var shootAfter = -1.0
 var shootClock = 0.0
 var storyNpc = false
@@ -84,6 +89,8 @@ func _ready():
 			pirateAfter = float(arg.substr(18))
 		elif arg.begins_with("--coop-dev-shoot="):
 			shootAfter = float(arg.substr(17))
+		elif arg.begins_with("--coop-dev-kill-npc="):
+			killAfter = float(arg.substr(20))
 		elif arg == "--coop-dev-story-npc":
 			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
@@ -186,6 +193,7 @@ func _physics_process(delta):
 	_devShootTick(delta)
 	_devFireTick(delta)
 	_devStoryTick()
+	_devKillTick(delta)
 	devStep = 5
 	if trace:
 		_log("dev trace: reached step %d" % devStep)
@@ -569,6 +577,24 @@ func _devPirateTick(delta):
 	pirate.preheat = true
 	var ok = field.spawnByBlueprint(pirate, CurrentGame.localCoords(at) + Vector2(2500, 0), 0, 500)
 	_log("dev: pirate %s '%s' spawned 2,500 px from %s: %s" % [pirate.transponder, pirate.getShipName(), target, ok])
+	devPirate = pirate
+
+func _devKillTick(delta):
+	if killAfter < 0 or devPirate == null:
+		return
+	if not is_instance_valid(devPirate) or devPirate.get("dead"):
+		devPirate = null
+		return
+	killClock += delta
+	if killClock < killAfter:
+		return
+	devPirate.lifepod = load("res://ships/Lifepod.tscn")
+	for c in devPirate.get_children():
+		if c.has_method("initExplosion"):
+			_log("dev: blowing up NPC %s %s (lifepod set)" % [devPirate.get_meta("dvnet_npc") if devPirate.has_meta("dvnet_npc") else "-", devPirate.transponder])
+			c.initExplosion()
+			break
+	devPirate = null
 
 func _devShootTick(delta):
 	if shootAfter < 0:
