@@ -9,13 +9,23 @@ extends "res://ships/ship-ctrl.gd"
 #                             corrected toward the owning machine's reported state.
 #
 # The local player's ship additionally publishes its thrusterShedule every frame
-# (captureIntent) so the other machine's puppet fires the same thrusters.
+# (captureIntent) so the other machine's puppet fires the same thrusters. Systems that are not thrusters
+# (weapons, claws, drone plants) fire outside the schedule (fireMatching -> node.fire), so their powers ride
+# along in the same intent under "_f" (node path -> power), and turret aim and fire under "_pdt".
+#
+# Godot 3 calls _ready / _process on every level of the script chain by itself, so this file never calls the
+# stock _ready or _process explicitly (that ran them twice per frame up to M3). Regular methods
+# (executeThrusterFire, vanish, the damage functions) still call the stock one with a leading dot.
 
 var coopExtensionActive = true
 
 var netControlled = false
 var netSchedule = null     # {thrusterName: [power, Vector2|null]} last received
 var netState = null        # {p: Vector2 global, r: float, v: Vector2, w: float, at: msec received}
+var netFired = {}          # puppet: node path -> power, non-thruster systems the owner is firing
+var netPdt = {}            # puppet: turret path -> [pivot rotation, fire power]
+var netDying = false       # puppet: its owner's ship is exploding (s.die)
+var coopTurrets = null     # owner: turrets found once the ship is set up
 
 export var netSnapDistance = 400.0
 export var netSnapAngle = 0.6
@@ -23,7 +33,6 @@ export var netCorrectionGain = 4.0
 export var netMaxExtrapolation = 0.25
 
 func _ready():
-	._ready()
 	Debug.l("COOP: ship-ctrl extension active on '%s' (playerControlled=%s ai=%s net=%s)" % [name, playerControlled, ai, netControlled])
 
 func _coopNet():
@@ -31,19 +40,59 @@ func _coopNet():
 		return ModLoader.get_meta("dvcoop")
 	return null
 
+# runs before the stock _process (Godot 3 order: this level first)
 func _process(delta):
 	if netControlled:
 		autopilot = false
 		if netSchedule != null:
-			thrusterShedule = netSchedule.duplicate(true)
-	._process(delta)
+			var s = netSchedule.duplicate(true)
+			netFired = s.get("_f", {})
+			netPdt = s.get("_pdt", {})
+			s.erase("_f")
+			s.erase("_pdt")
+			thrusterShedule = s
 
+# Called by the stock _process after `fired` is reset and the controls ran, before the stock zeroes every
+# system nobody fired this frame.
 func executeThrusterFire(solve: bool, delta: float):
-	if playerControlled and not netControlled:
+	if netControlled:
+		for path in netFired:
+			var node = get_node_or_null(NodePath(path))
+			if node != null and node.has_method("fire"):
+				node.fire(netFired[path])
+				fired[node] = netFired[path]
+	elif playerControlled:
 		var net = _coopNet()
 		if net != null:
-			net.captureIntent(self, thrusterShedule)
+			var intent = thrusterShedule.duplicate()
+			intent["_f"] = _coopFired()
+			intent["_pdt"] = _coopTurretStates()
+			net.captureIntent(self, intent)
 	.executeThrusterFire(solve, delta)
+
+func _coopFired() -> Dictionary:
+	var out = {}
+	for node in fired:
+		if fired[node] != 0 and is_instance_valid(node) and not (node.name in thrusters):
+			out[str(get_path_to(node))] = fired[node]
+	return out
+
+func _coopTurretStates() -> Dictionary:
+	if coopTurrets == null and setup:
+		coopTurrets = []
+		var stack = [self]
+		while stack.size() > 0:
+			var n = stack.pop_back()
+			if n.has_method("coopState"):
+				coopTurrets.append(n)
+			for c in n.get_children():
+				stack.append(c)
+	var out = {}
+	if coopTurrets != null:
+		for t in coopTurrets:
+			if is_instance_valid(t):
+				out[str(get_path_to(t))] = t.coopState()
+	return out
 
 func _integrate_forces(state):
 	if netControlled:
@@ -70,23 +119,42 @@ func _integrate_forces(state):
 # (CurrentGame.forgetTransponser), may remove a ship from our garage, and spawns a lifepod. Only CoopNet
 # frees a puppet. Ship damage and destruction get replicated from the owner in M4.
 
+func _coopNoDamage() -> bool:
+	return netControlled or Engine.has_meta("dvcoop_fx_only")
+
 func applyKineticDamage(energy, point, delta = null):
-	if netControlled:
+	if _coopNoDamage():
 		return
 	.applyKineticDamage(energy, point, delta)
 
 func applyEnergyDamage(energy, point, delta):
-	if netControlled:
+	if _coopNoDamage():
 		return energy   # absorbed, so beams still stop at the hull
 	return .applyEnergyDamage(energy, point, delta)
 
 func applyEmpDamage(energy, point, delta):
-	if netControlled:
+	if _coopNoDamage():
 		return
 	.applyEmpDamage(energy, point, delta)
 
+func applyHostility(f, amt, broadcast = true, factor = 0.25, includeIndependents = false):
+	if _coopNoDamage():
+		return
+	.applyHostility(f, amt, broadcast, factor, includeIndependents)
+
 func vanish(except = []):
 	if netControlled:
-		Debug.l("COOP: blocked vanish() on puppet '%s'" % name)
+		if netDying:
+			# the explosion's picture: hide and stop colliding, none of the stock save writes or lifepod
+			for c in get_children():
+				if not (c in except):
+					if "visible" in c:
+						c.visible = false
+					if "playing" in c:
+						c.stop()
+			disableCollisionsOn(self)
+			Debug.l("COOP: puppet '%s' exploded" % name)
+		else:
+			Debug.l("COOP: blocked vanish() on puppet '%s'" % name)
 		return
 	.vanish(except)
