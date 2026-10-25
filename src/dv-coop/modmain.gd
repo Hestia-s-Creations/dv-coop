@@ -37,6 +37,9 @@ func _init(loader = null):
 
 func _ready():
 	name = "DvCoop"
+	# The game pauses the whole tree on focus loss, the pause key and the Steam overlay. Our networking must keep
+	# running through that, or one player alt-tabbing drops out of the cell after 1.5 s (children inherit this).
+	pause_mode = Node.PAUSE_MODE_PROCESS
 	if "--coop-selftest" in OS.get_cmdline_args():
 		selfTest = true
 	var net = load("res://dv-coop/net/CoopNet.gd").new()
