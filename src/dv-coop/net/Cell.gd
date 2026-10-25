@@ -402,8 +402,7 @@ func _dropQueuedOddities(why):
 	ring.spawnNow.clear()
 	ring.unspawnedOddities.clear()
 	ring.unspawnedOdditiesLocation.clear()
-	if dropped > 0:
-		_log("dropped %d queued oddities (%s)" % [dropped, why])
+	_log("dropped %d queued oddities (%s)" % [dropped, why])
 
 func _setSpawner(on):
 	var f = _field()
