@@ -232,11 +232,22 @@ def gate2(insts):
     res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)")]
     if not res:
         return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N)"]
-    bad = [r for r in res if r[2] not in ("rock", "shards")]
+    # shards the authority's fracture actually spawned (the stock fracture can spawn none: each shard gets one
+    # placement try); "neither" is only a failure when shards existed
+    spawned = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT frac trial=(\d+) id=\S+ shards spawned=(\d+)"):
+            spawned[m.group(1)] = int(m.group(2))
     counts = {}
+    bad = []
     for r in res:
-        counts[r[2]] = counts.get(r[2], 0) + 1
-    return not bad, ["%d trials: %s" % (len(res), counts)] + ["FAIL %s trial %s: %s" % r for r in bad[:10]]
+        key = r[2]
+        if key == "neither" and spawned.get(r[1]) == 0:
+            key = "neither (fracture spawned no shards: stock)"
+        elif key not in ("rock", "shards"):
+            bad.append(r)
+        counts[key] = counts.get(key, 0) + 1
+    return not bad, ["%d trials: %s" % (len(res), counts)] + ["FAIL %s trial %s: %s (shards spawned: %s)" % (r + (spawned.get(r[1], "?"),)) for r in bad[:10]]
 
 
 def gate3(insts):

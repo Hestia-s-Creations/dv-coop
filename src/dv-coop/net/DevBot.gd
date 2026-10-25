@@ -62,6 +62,7 @@ var pressed = ""     # input action held down for the current shot
 var noWeaponLogged = false
 var frac = {"state": "idle"}  # member: {state, trial, id, at (wall ms), until (s), pos}
 var fracPlan = []             # authority: [{trial, id, at}]
+var fracWatch = []            # authority: [{trial, id, pos, until, n}] counting the shards each fracture spawned
 var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
@@ -90,6 +91,9 @@ func _hook():
 	if own != null:
 		own.connect("granted", self, "_onGranted")
 		own.connect("denied", self, "_onDenied")
+	var rs = _rs()
+	if rs != null:
+		rs.connect("rock_born", self, "_onRockBorn")
 
 func _own():
 	return net.get_node_or_null("Own")
@@ -236,7 +240,12 @@ func _fracCoordinate(c, now):
 				n.totalEnergy = n.splitEnergyThreshold * 1.5
 				n.set_physics_process(true)
 				n.set_process(true)   # fractureTime counts down in _process; the stock damage path wakes both
+				fracWatch.append({"trial": f.trial, "id": f.id, "pos": n.global_position, "until": now + 3.5, "n": 0})
 				Debug.l("COOP: BOT frac trial=%d id=%s fracture set" % [f.trial, f.id])
+	for w in fracWatch.duplicate():
+		if now >= w.until:
+			fracWatch.erase(w)
+			Debug.l("COOP: BOT frac trial=%d id=%s shards spawned=%d" % [w.trial, w.id, w.n])
 	if trial >= trials or now - inCellSince < SETTLE or now < nextAt:
 		return
 	var members = []
@@ -271,6 +280,11 @@ func _fracCoordinate(c, now):
 	for p in members:
 		net.send(p, {"t": "bot.frac", "trial": trial, "id": best, "at": at}, true)
 	Debug.l("COOP: BOT frac trial=%d id=%s at %d" % [trial, best, at])
+
+func _onRockBorn(id, node):
+	for w in fracWatch:
+		if node.global_position.distance_to(w.pos) < 1500.0:
+			w.n += 1
 
 func _onFrac(from, msg):
 	if mode != "frac" or frac.state != "idle":
