@@ -23,6 +23,9 @@ extends Node
 #      --coop-dev-pirate=<s>   as cell authority, s seconds into the cell, spawn a pirate TRTL near a member (gate 9).
 #      --coop-dev-fireall=<s>  s seconds after my dive cutscene ends, hold every non-thruster command (weapons,
 #                              claws, drones) for 10 s, so the puppets of my ship replay them (gate 7).
+#      --coop-dev-story-npc    when the Cell dev warp lands me next to a cell (before I join it), spawn two NPC
+#                              TRTLs beside me, one marked essential (a story NPC), one plain (gate 9 sub-check:
+#                              the plain one is freed on joining, the essential one is kept and seen by the others).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -51,6 +54,8 @@ var pirateClock = 0.0
 var pirateDone = false
 var shootAfter = -1.0
 var shootClock = 0.0
+var storyNpc = false
+var storyDone = false
 var fireAfter = -1.0
 var fireClock = 0.0
 var counts = {}      # 5 s summary: puppet systems replayed, hits turned into effects only
@@ -74,7 +79,16 @@ func _hookCell():
 # Joining someone else's cell: the NPCs my spawner and story made are this machine's alone, so they go, like my
 # rocks. Quietly (the field's kill(), the stock despawn path), never vanish(), which writes the save and drops
 # lifepods. Kept and streamed as mine: ships the game marks essential (story ships, anyone mid-dialog), player-faction
-# ships (my drones and fleet), and anything docked to or held by my ship.
+# ships (my drones and fleet), anything docked to or held by my ship, and ships my save records individually
+# (an encounter in state.encounteredShips, or a non-empty state.dispositions entry, both keyed by transponder).
+# Read-only: CurrentGame.getDispositionReferenceOfTransponder would create the entry it looks up.
+func _inMySave(transponder) -> bool:
+	var st = CurrentGame.state
+	if st.get("encounteredShips", {}).has(transponder):
+		return true
+	var d = st.get("dispositions", {}).get(transponder)
+	return d is Dictionary and d.size() > 0
+
 func _onCellJoined(authority_id):
 	var cell = _cell()
 	var field = _field()
@@ -87,7 +101,7 @@ func _onCellJoined(authority_id):
 		if not _isNpc(c):
 			continue
 		var held = me != null and is_instance_valid(me) and (c.get("docked") == me or me.temporaryCargo.has(c) or me.cargo.has(c))
-		if c.essential or c.faction == "player" or held:
+		if c.essential or c.faction == "player" or held or _inMySave(c.transponder):
 			kept.append("%s/%s" % [c.transponder, c.getShipName()])
 		else:
 			freed.append(c.transponder)
@@ -100,6 +114,8 @@ func _onCellJoined(authority_id):
 			pirateAfter = float(arg.substr(18))
 		elif arg.begins_with("--coop-dev-shoot="):
 			shootAfter = float(arg.substr(17))
+		elif arg == "--coop-dev-story-npc":
+			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
 			fireAfter = float(arg.substr(19))
 
@@ -144,12 +160,30 @@ func _physics_process(delta):
 	_devPirateTick(delta)
 	_devShootTick(delta)
 	_devFireTick(delta)
+	_devStoryTick()
 	countAccum += delta
 	if countAccum >= 5.0:
 		countAccum = 0.0
 		if counts.size() > 0:
 			_log("ships 5 s: %s, mirrors=%d npcs=%d pods=%d" % [counts, mirrors.size(), npcs.size(), pods.size()])
 		counts = {}
+
+func _devStoryTick():
+	if not storyNpc or storyDone:
+		return
+	var cell = _cell()
+	var field = _field()
+	var ship = net.localShip
+	if cell == null or field == null or not cell.warpDone or ship == null or not is_instance_valid(ship):
+		return
+	storyDone = true
+	for essential in [true, false]:
+		var npc = Shipyard.createShipByConfig({"model": "TRTL", "faction": "civilian", "config": {}}, true)
+		npc.ai = true
+		npc.preheat = true
+		npc.essential = essential
+		var ok = field.spawnByBlueprint(npc, ship.global_position + Vector2(0, 1500 if essential else -1500), 0, 300)
+		_log("dev: %s NPC %s '%s' spawned beside me before joining: %s" % ["essential" if essential else "plain", npc.transponder, npc.getShipName(), ok])
 
 func count(what, n):
 	counts[what] = counts.get(what, 0) + n
