@@ -387,7 +387,17 @@ func _fracClaim(now):
 							claw.result = "granted"
 						break
 			if now > frac.until:
-				_fracDone("neither", "", "no shard claimed")
+				var newIds = 0
+				var nearest = -1.0
+				for id in rs.tracked:
+					var tn = rs.tracked[id].n
+					if not frac.before.has(id) and is_instance_valid(tn):
+						newIds += 1
+						if frac.pos != null:
+							var d = tn.global_position.distance_to(frac.pos)
+							if nearest < 0 or d < nearest:
+								nearest = d
+				_fracDone("neither", "", "no shard claimed; %d new tracked rocks, nearest %.0f px from the parent, pos known %s" % [newIds, nearest, frac.pos != null])
 
 func _fracDone(result, got, note):
 	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s (%s)" % [frac.trial, frac.id, result, "" if got == "" else " got=%s" % got, note])
