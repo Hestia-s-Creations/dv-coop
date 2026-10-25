@@ -31,6 +31,10 @@ FORBIDDEN = [
     (r"\bJavaScript\b", "browser scripting"),
     (r"\bbytes2var\([^)]*,\s*true", "decoding objects from the network"),
     (r"\bExpression\.new\b", "evaluating code"),
+    # Not about reach: Godot 3 already runs these on every level of a script chain, so an explicit super call runs
+    # the game's code twice (it did, from M1 to M4, on every ship).
+    (r"(?<![\w.])\.(_init|_ready|_process|_physics_process|_enter_tree|_exit_tree|_input|_unhandled_input|_notification)\(",
+     "explicit super call of an engine callback (Godot 3 already calls every level)"),
 ]
 # Things the mod is allowed to reach outside the game for. Each use is listed in the report.
 DECLARED = [
