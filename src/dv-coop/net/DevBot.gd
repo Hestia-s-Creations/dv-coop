@@ -246,6 +246,15 @@ func _shootTick():
 			ship.linear_velocity = rock.linear_velocity
 			ship.angular_velocity = 0.0
 			w.fire(1.0)
+			if now >= holdLogAt:
+				holdLogAt = now + 1.0
+				var to = rock.global_position - w.global_position
+				var side = to.cross(dir)
+				var hit = w.get_world_2d().direct_space_state.intersect_ray(w.global_position, w.global_position + dir * 4000.0, ship.physicsExclude, 35)
+				var what = "nothing"
+				if hit:
+					what = "%s%s" % [hit.collider.get_meta("dvnet") if hit.collider.has_meta("dvnet") else hit.collider.name, " (target)" if hit.collider == rock else ""]
+				Debug.l("COOP: BOT %s aim id=%s along=%.0f side=%.0f ray hits %s readpower=%s energy=%.0f" % [mode, shoot.id, to.dot(dir), side, what, w.get("readpower"), ship.get("energy") if ship.get("energy") != null else -1])
 
 # A rock the authority owns and streams, not held by anyone: the nearest one, preferring heavy rocks (they last).
 func _pickTarget() -> String:
