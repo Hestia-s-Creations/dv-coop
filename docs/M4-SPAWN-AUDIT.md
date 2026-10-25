@@ -179,3 +179,29 @@ member-owned NPCs (Npc.gd `_onCellJoined`). What marks an NPC as save- or story-
 | `essential` | ship-ctrl export, also true while `talkingWith != null` (ship-ctrl.gd :77-81) | keep |
 | faction `"player"`, docked / held by my ship | my drones and fleet, temporary cargo | keep |
 
+## Status of the 8 gate sites (M4, 2026-10-25)
+
+How each site is kept off members. "Never instanced" means: a member's spawner is suspended in a cell (so no
+`makeAt` / `spawnNow` / InstanceWithChance), Cell drops queued oddities on joining, RockSync builds only
+`asteroids/class-*` and `asteroids/mineral-*` scenes (RockSync.gd `isRock`), and Npc.gd builds only Shipyard ships
+from a `fullConfig`. So no scene with these `_ready` / event spawners is ever created on a member while it is one.
+
+| # | Site | Status |
+| --- | --- | --- |
+| 12 | Fracture shards (asteroid.gd :215) | **Gated** (Own track): a member's rocks are tracked copies, and ext/asteroid.gd lets only the owner fracture; damage on a tracked copy is effects only (or forwarded as d.ev). |
+| 15 | NPC lifepods (ship-ctrl vanish) | **Gated**: mirrors are netControlled, so ext/ship-ctrl.gd blocks vanish() (no pod, no forgetTransponser); the NPC dies on its runner (pod there, once) and n.d tells mirrors to play the explosion. Dev check: gate_m4.py gate 9b (`--coop-dev-pirate` + `--coop-dev-kill-npc`). |
+| 24 | DestroyedHabitat bodies (`_ready`) | **Never instanced on a member.** |
+| 25 | HugeRock / Moonlet uranium crystals (`_ready`) | **Never instanced on a member.** |
+| 26 | HugeRock g4a pirate + setStory (`_ready`) | **Never instanced on a member.** |
+| 39 | Pistacja station debris (BigExplosion) | **Never instanced on a member.** |
+| 42 | Ring-storm rays (RingStormManager on a StormBeacon) | **Never instanced on a member.** Synchrotron storm nodes from a puppet's weapon are dropped (ext/synchrotron.gd). |
+| 50 | PhageTheta detacher (BiggerMoonletSpelunker `_ready`) | **Never instanced on a member.** |
+
+**Residual case: oddities a member already had before joining.** A member's own moonlets, habitats, stations or
+storm beacons spawned while it was solo stay in its field after it joins. Their `_ready` side effects ran while
+solo, which is legitimate, but later events can still fire on that member alone, and nobody else sees those bodies:
+a station's BigExplosion debris (#39), a storm beacon's rays (#42, harmless on tracked rocks, whose damage is effects
+only), a crystal pickup's setStory (#25, the member's own save, legitimate). Options: free them on joining like the
+member's ephemeral NPCs (the POI stays in the member's save and respawns when it is solo again), or mirror them.
+Lead's call.
+
