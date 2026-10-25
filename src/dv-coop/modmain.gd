@@ -26,6 +26,7 @@ const EXTENSIONS = [
 	"res://dv-coop/ext/FusionReactor.gd",
 	"res://dv-coop/ext/CurrentGame.gd",
 	"res://dv-coop/ext/BulletTimer.gd",
+	"res://dv-coop/ext/PauseLayer.gd",
 ]
 
 var modLoader = null
