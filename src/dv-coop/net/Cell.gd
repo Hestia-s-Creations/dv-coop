@@ -15,6 +15,7 @@ extends Node
 #   switching cells:                 cell_left(), then cell_joined(newAuth) in the same tick
 #
 # Dev: --coop-warp-to-peer=<s>  s seconds after the dive cutscene ends, jump 20,000 px from the lowest-id peer.
+#      --coop-dev-slipstream=<s> as authority with confirmed members, force the stock slipstream every s seconds.
 
 signal cell_joined(authority_id)
 signal cell_left()
@@ -63,6 +64,9 @@ var warpAfter = -1.0
 var warpClock = 0.0
 var warpDone = false
 
+var devSlipEvery = -1.0
+var devSlipClock = 0.0
+
 func _ready():
 	name = "Cell"
 	# Run after BulletTimer and the rest of the game so the time-scale pin has the last word each tick.
@@ -74,6 +78,8 @@ func _ready():
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-warp-to-peer="):
 			warpAfter = float(arg.substr(20))
+		elif arg.begins_with("--coop-dev-slipstream="):
+			devSlipEvery = float(arg.substr(22))
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 
@@ -345,6 +351,12 @@ func _authorityTick(delta):
 	# Members may sit up to RANGE_LEAVE from me; slipstream before any of them reaches its own radius,
 	# because a member's stock slipstream would move its origin away from the cell's.
 	var f = _field()
+	if f != null and devSlipEvery > 0 and confirmed.size() > 0:
+		devSlipClock += delta
+		if devSlipClock >= devSlipEvery:
+			devSlipClock = 0.0
+			_log("dev slipstream forced at gen %d" % originGen)
+			Tool.deferCallWhenIdle(f, "slipstream", [], true)
 	if f != null:
 		var now = _now()
 		for id in cellMembers:
