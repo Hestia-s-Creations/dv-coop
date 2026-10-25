@@ -580,7 +580,8 @@ func _byFirst(a, b):
 	return a[0] < b[0]
 
 func _logState():
-	var line = "COOP: RS role=%s bodies=%d rocks=%d tracked=%d" % [role, bodies.size(), rocks.size(), tracked.size()]
+	# ms = wall clock, so lines from different machines can be lined up to the millisecond
+	var line = "COOP: RS role=%s ms=%d bodies=%d rocks=%d tracked=%d" % [role, OS.get_system_time_msecs(), bodies.size(), rocks.size(), tracked.size()]
 	if role == "authority":
 		line += " recv=%d sent s=%d d=%d u=%d up=%.1f kB/s" % [receivers.size(), sent.s, sent.d, sent.u, sent.bytes / 1000.0 / LOG_EVERY]
 		for peer in receivers:
