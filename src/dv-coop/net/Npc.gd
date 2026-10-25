@@ -23,9 +23,9 @@ extends Node
 #      --coop-dev-pirate=<s>   as cell authority, s seconds into the cell, spawn a pirate TRTL near a member (gate 9).
 #      --coop-dev-fireall=<s>  s seconds after my dive cutscene ends, hold every non-thruster command (weapons,
 #                              claws, drones) for 10 s, so the puppets of my ship replay them (gate 7).
-#      --coop-dev-story-npc    when the Cell dev warp lands me next to a cell (before I join it), spawn two NPC
-#                              TRTLs beside me, one marked essential (a story NPC), one plain (gate 9 sub-check:
-#                              the plain one is freed on joining, the essential one is kept and seen by the others).
+#      --coop-dev-story-npc    while I'm solo after my dive, spawn two NPC TRTLs beside me, one marked essential (a
+#                              story NPC), one plain; once I've joined a cell, bring the kept one next to me (gate 9
+#                              sub-check: the plain one is freed on joining, the essential one is kept and seen).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -56,6 +56,9 @@ var shootAfter = -1.0
 var shootClock = 0.0
 var storyNpc = false
 var storyDone = false
+var storyKept = null
+var storyMoved = false
+var devLogAccum = 0.0
 var fireAfter = -1.0
 var fireClock = 0.0
 var counts = {}      # 5 s summary: puppet systems replayed, hits turned into effects only
@@ -161,6 +164,15 @@ func _physics_process(delta):
 	_devShootTick(delta)
 	_devFireTick(delta)
 	_devStoryTick()
+	devLogAccum += delta
+	if devLogAccum >= 10.0 and (explodeAfter >= 0 or pirateAfter >= 0 or fireAfter >= 0):
+		devLogAccum = 0.0
+		var sh = net.localShip
+		var ok = sh != null and is_instance_valid(sh)
+		var c = _cell()
+		_log("dev state: ship=%s cutscene=%s setup=%s clocks fire=%.0f explode=%.0f pirate=%.0f cell=%s auth=%s members=%s" % [
+			sh.name if ok else "-", sh.cutscene if ok else "-", sh.get("setup") if ok else "-", fireClock, explodeClock, pirateClock,
+			c.inCell() if c else "-", c.isAuthority() if c else "-", c.members() if c else "-"])
 	countAccum += delta
 	if countAccum >= 5.0:
 		countAccum = 0.0
@@ -181,12 +193,25 @@ func _saveWatch():
 		lastSave = w
 
 func _devStoryTick():
-	if not storyNpc or storyDone:
+	if not storyNpc:
 		return
 	var cell = _cell()
 	var field = _field()
 	var ship = net.localShip
-	if cell == null or field == null or not cell.warpDone or ship == null or not is_instance_valid(ship):
+	if cell == null or field == null or ship == null or not is_instance_valid(ship) or ship.cutscene:
+		return
+	if storyDone:
+		if not storyMoved and cell.inCell() and not cell.isAuthority() and storyKept != null:
+			storyMoved = true
+			if is_instance_valid(storyKept) and storyKept.is_inside_tree():
+				storyKept.global_position = ship.global_position + Vector2(0, 1500)
+				storyKept.linear_velocity = ship.linear_velocity
+				storyKept.reset_physics_interpolation()
+				_log("dev: kept essential NPC %s brought beside me in the cell" % storyKept.transponder)
+			else:
+				_log("dev: the essential NPC did not survive joining")
+		return
+	if cell.inCell():
 		return
 	storyDone = true
 	for essential in [true, false]:
@@ -194,6 +219,8 @@ func _devStoryTick():
 		npc.ai = true
 		npc.preheat = true
 		npc.essential = essential
+		if essential:
+			storyKept = npc
 		var ok = field.spawnByBlueprint(npc, ship.global_position + Vector2(0, 1500 if essential else -1500), 0, 300)
 		_log("dev: %s NPC %s '%s' spawned beside me before joining: %s" % ["essential" if essential else "plain", npc.transponder, npc.getShipName(), ok])
 
