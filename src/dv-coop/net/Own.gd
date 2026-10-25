@@ -387,6 +387,14 @@ func _changeRole(from, to):
 		pending.clear()
 		Debug.l("COOP: OWN promoted: keeping %d player-owned rocks, %d held here" % [owners.size(), heldHere.size()])
 	else:
+		# rocks other players owned: they stay in our field at their last streamed state (RockSync keeps or promotes
+		# them), so log where, for the holder-loss gates
+		for id in owners.keys():
+			if owners[id] != net.myId:
+				var n = rs.nodeOf(id)
+				if n != null:
+					var g = CurrentGame.globalCoords(n.global_position)
+					Debug.l("COOP: OWN keeps %s (owner %s gone from our cell) at %.0f,%.0f" % [id, owners[id], g.x, g.y])
 		for id in mine.keys():
 			var n = mine[id]
 			if is_instance_valid(n) and to == "member":
