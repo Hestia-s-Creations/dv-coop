@@ -20,6 +20,8 @@ extends Node
 #                         (only if it still owns it). The member (salvage arm on its ship) reaches for it so the lock lands
 #                         around `at`. Lines: COOP: BOT frac trial=i id=... result=rock (claim granted first) |
 #                         shards (denied: fracturing, then the arm took a shard) | neither.
+#                         --coop-bot=frac,N,noarm: the member claims directly (Own.touch) at `at` +-jitter instead of
+#                         with an arm, and after a "fracturing" deny claims the first new rock near the parent.
 #   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
@@ -60,6 +62,7 @@ var pressed = ""     # input action held down for the current shot
 var noWeaponLogged = false
 var frac = {"state": "idle"}  # member: {state, trial, id, at (wall ms), until (s), pos}
 var fracPlan = []             # authority: [{trial, id, at}]
+var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
@@ -72,6 +75,7 @@ func _ready():
 			mode = parts[0]
 			trials = int(parts[1]) if parts.size() > 1 else 100
 			keepLast = parts.size() > 2 and parts[2] == "hold"
+			noArm = parts.size() > 2 and parts[2] == "noarm"
 	if mode == "":
 		Debug.l("COOP: BOT inactive")
 		set_physics_process(false)
@@ -271,6 +275,9 @@ func _onFrac(from, msg):
 	frac = {"state": "wait", "trial": int(msg.trial), "id": str(msg.id), "at": int(msg.at), "until": 0.0, "pos": null}
 
 func _fracMember(now):
+	if noArm:
+		_fracClaim(now)
+		return
 	var arm = _arm()
 	var ship = net.localShip
 	if arm == null or ship == null or ship.get("cutscene") == true:
@@ -313,6 +320,73 @@ func _fracMember(now):
 						return
 				if now > frac.until:
 					_fracEnd(arm, "neither", now)
+
+# Protocol race without an arm: claim at the agreed instant (jittered so either side can win), then shards.
+func _fracClaim(now):
+	var wall = OS.get_system_time_msecs()
+	var rs = _rs()
+	for id in holding.keys():
+		if now >= holding[id]:
+			holding.erase(id)
+			var hn = rs.nodeOf(id)
+			if hn != null:
+				_own().untouch(hn, "bot")
+	match frac.state:
+		"wait":
+			if not frac.has("jit"):
+				frac.jit = int(rand_range(-300, 100))
+				frac.before = {}
+				for id in rs.tracked:
+					frac.before[id] = true
+			if wall >= frac.at + frac.jit:
+				var n = rs.nodeOf(frac.id)
+				if n == null:
+					_fracDone("neither", "", "parent gone before the claim")
+					return
+				frac.pos = n.global_position
+				frac.state = "claim"
+				frac.until = now + 3.0
+				claw.id = frac.id
+				claw.result = ""
+				if _own().touch(n, "bot"):
+					claw.result = "granted"
+		"claim":
+			if claw.result == "granted":
+				_fracDone("rock", frac.id, "jitter %d ms" % frac.jit)
+			elif claw.result.begins_with("denied"):
+				frac.state = "shards"
+				frac.until = now + FRAC_SHARD_WAIT
+				claw.id = ""
+				claw.result = ""
+			elif now > frac.until:
+				_fracDone("neither", "", "no answer")
+		"shards":
+			if claw.id != "":
+				if claw.result == "granted":
+					_fracDone("shards", claw.id, "jitter %d ms" % frac.jit)
+					return
+				if claw.result.begins_with("denied"):
+					claw.id = ""
+					claw.result = ""
+			else:
+				for id in rs.tracked:
+					var n = rs.tracked[id].n
+					if not frac.before.has(id) and id != frac.id and is_instance_valid(n) and frac.pos != null 							and n.global_position.distance_to(frac.pos) < 1500.0:
+						claw.id = id
+						claw.result = ""
+						if _own().touch(n, "bot"):
+							claw.result = "granted"
+						break
+			if now > frac.until:
+				_fracDone("neither", "", "no shard claimed")
+
+func _fracDone(result, got, note):
+	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s (%s)" % [frac.trial, frac.id, result, "" if got == "" else " got=%s" % got, note])
+	if got != "":
+		holding[got] = _secs() + 1.0   # release after a second (member tick in race mode does the release)
+	claw.id = ""
+	claw.result = ""
+	frac = {"state": "idle"}
 
 func _fracEnd(arm, result, now, got = ""):
 	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s" % [frac.trial, frac.id, result, "" if got == "" else " (holding %s)" % got])
