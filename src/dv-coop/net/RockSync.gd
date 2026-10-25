@@ -608,11 +608,12 @@ func _logState():
 	if screenDump and role != "solo":
 		_logScreen()
 
-# Screen position of every rock in view, for matching screenshots between machines: screen = ct * local position.
+# Screen position of every rock in view, for matching screenshots between machines: screen = ct * local position,
+# in canvas px (vp=); scale by window px / vp for a screenshot.
 func _logScreen():
 	var vp = get_viewport()
 	var ct = vp.canvas_transform
-	var size = vp.size
+	var size = vp.get_visible_rect().size   # the canvas size ct maps into (the window may stretch it)
 	var out = []
 	for pool in [rocks, tracked]:
 		for id in pool:
