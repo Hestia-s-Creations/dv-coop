@@ -31,6 +31,7 @@ var net = null   # CoopNet
 
 signal rock_born(id, node)    # a rock entered the field on this machine (spawned here or built from a recipe)
 signal rock_gone(id, node)    # a rock is leaving the field (despawn, fracture, consumed, pruned)
+signal body_born(id, node)    # any RigidBody2D entered the field (bullets, ships, rocks)
 
 var field = null
 var counter = 0
@@ -289,6 +290,7 @@ func _onChildEntered(node):
 		id = "%d:%d" % [net.myId, counter]
 		node.set_meta("dvnet", id)
 	bodies[id] = node
+	emit_signal("body_born", id, node)
 	if isRock(node):
 		emit_signal("rock_born", id, node)
 		if not node.has_meta("dvnet_tracked"):
@@ -326,15 +328,22 @@ static func _isNum(x) -> bool:
 static func _validRecipe(rc) -> bool:
 	return rc is Array and rc.size() == 11 and rc[0] is String and rc[1] is String and _isNum(rc[2]) 		and rc[3] is Vector2 and _isNum(rc[4]) and rc[5] is Vector2 and _isNum(rc[6]) and _isNum(rc[7]) 		and _isNum(rc[8]) and _isNum(rc[9]) and _isNum(rc[10])
 
-func _build(rc):
+# Authority: build a rock a member created (fracture shards, o.new) as one we simulate and stream.
+func buildSimulated(rc):
+	if not _validRecipe(rc) or bodies.has(rc[0]):
+		return null
+	return _build(rc, false)
+
+func _build(rc, asTracked = true):
 	var id = rc[0]
 	var kind = rc[1]
 	if not scenes.has(kind):
 		Debug.l("COOP: RS dropped recipe %s: kind %s is not a spawner rock scene" % [id, kind])
-		return
+		return null
 	var n = scenes[kind].instance()
 	n.set_meta("dvnet", id)
-	n.set_meta("dvnet_tracked", true)
+	if asTracked:
+		n.set_meta("dvnet_tracked", true)
 	n.position = rc[3]
 	n.rotation = rc[4]
 	n.asteroidClass = int(rc[7])
@@ -351,7 +360,22 @@ func _build(rc):
 		_logMineral("built", id, n)
 	else:
 		n.rnd = rc[8]
-	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": _ms()}
+	if asTracked:
+		tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": _ms()}
+	return n
+
+func recipeOf(id):
+	var n = nodeOf(id)
+	return _recipe(id, n) if n != null else null
+
+# Member: a rock born here (a fracture shard) is handed to the authority; from now on it is a tracked copy.
+func handOver(id):
+	var n = nodeOf(id)
+	if n == null:
+		return
+	rocks.erase(id)
+	fresh.erase(id)
+	track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
 
 var mineralsLogged = {}
 func _logMineral(what, id, n):
