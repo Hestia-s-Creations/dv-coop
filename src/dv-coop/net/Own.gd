@@ -581,9 +581,24 @@ func _onRockBorn(id, node):
 	if role == "authority":
 		cons.born += 1
 
+const DISABLED_LAYER = 2147483648   # the MPU sets this collision layer on a rock just before freeing it
+
 func _onRockGone(id, node):
+	if role == "member" and mine.has(id):
+		# a rock we own is leaving our field
+		if node.get("fracturing") == true:
+			Debug.l("COOP: OWN %s fractured while ours (shards via o.new: M4 TODO)" % id)
+			mine.erase(id)
+		elif node.collision_layer == DISABLED_LAYER:
+			eat(node, "mpu")
+		else:
+			_release(id, node, "left-field")
+		return
 	if role != "authority":
 		return
+	if node.collision_layer == DISABLED_LAYER and not eatenIds.has(id) and not owners.has(id):
+		_tombstone(id, node.getComposition().duplicate() if node.has_method("getComposition") else {}, "mpu")
+		heldHere.erase(id)
 	cons.gone += 1
 	var why = "despawn"
 	if eatenIds.has(id):
