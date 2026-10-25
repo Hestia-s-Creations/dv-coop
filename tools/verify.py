@@ -62,6 +62,8 @@ def read_manifest():
     entries = {}
     for line in MANIFEST.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#"):
+            if line.startswith(("<<<<<<<", "=======", ">>>>>>>")):
+                sys.exit("MANIFEST.sha256 has merge conflict markers: run python tools/verify.py --update")
             digest, rel = line.split(None, 1)
             entries[rel.strip()] = digest
     return entries
