@@ -49,6 +49,7 @@ var armFitted = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
 var shoot = {"state": "idle", "id": "", "until": 0.0}
+var pressed = ""     # input action held down for the current shot
 var noWeaponLogged = false
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
@@ -228,10 +229,17 @@ func _shootTick():
 				return
 			trial += 1
 			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME}
-			Debug.l("COOP: BOT %s trial=%d id=%s firing" % [mode, trial, id])
+			# fire the way a player does: the ship zeroes every weapon each frame unless its command input is held
+			pressed = _fireAction(ship, w)
+			if pressed != "":
+				Input.action_press(pressed)
+			Debug.l("COOP: BOT %s trial=%d id=%s firing (action %s)" % [mode, trial, id, pressed])
 		"fire":
 			var rock = _rs().nodeOf(shoot.id)
 			if rock == null or now >= shoot.until:
+				if pressed != "":
+					Input.action_release(pressed)
+					pressed = ""
 				Debug.l("COOP: BOT %s trial=%d id=%s done%s" % [mode, trial, shoot.id, "" if rock != null else " (rock gone)"])
 				shoot = {"state": "idle", "id": "", "until": now + SHOOT_GAP}
 				if trial >= trials:
@@ -245,7 +253,6 @@ func _shootTick():
 				ship.reset_physics_interpolation()
 			ship.linear_velocity = rock.linear_velocity
 			ship.angular_velocity = 0.0
-			w.fire(1.0)
 			if now >= holdLogAt:
 				holdLogAt = now + 1.0
 				var to = rock.global_position - w.global_position
@@ -255,6 +262,17 @@ func _shootTick():
 				if hit:
 					what = "%s%s" % [hit.collider.get_meta("dvnet") if hit.collider.has_meta("dvnet") else hit.collider.name, " (target)" if hit.collider == rock else ""]
 				Debug.l("COOP: BOT %s aim id=%s along=%.0f side=%.0f ray hits %s readpower=%s energy=%.0f" % [mode, shoot.id, to.dot(dir), side, what, w.get("readpower"), ship.get("energy") if ship.get("energy") != null else -1])
+
+# The input action that fires `w`: its own command letter, or its weapon slot's.
+func _fireAction(ship, w) -> String:
+	var n = w
+	while n != null and n != ship:
+		var cmd = n.get("command")
+		if cmd is String and cmd != "" and ship.has_method("actionForEvent"):
+			return ship.actionForEvent(cmd.substr(0, 1))
+		n = n.get_parent()
+	Debug.l("COOP: BOT %s: no command letter found for %s" % [mode, w.name])
+	return ""
 
 # A rock the authority owns and streams, not held by anyone: the nearest one, preferring heavy rocks (they last).
 func _pickTarget() -> String:
