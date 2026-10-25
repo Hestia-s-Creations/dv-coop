@@ -3,9 +3,13 @@ extends Node
 # Cell: which peers share a simulation, who is its authority, and origin adoption (M3). See docs/M3.md.
 #
 # Every machine builds the same proximity graph from beacons: two players in the rings are linked under
-# RANGE_JOIN and stay linked until RANGE_LEAVE. The connected group that contains me is my cell, and its
-# lowest peer id is the authority. The authority confirms the cell with c.state (reliable, on change and every
-# STATE_EVERY s); members act only on that. A member joining shifts its whole world onto the authority's
+# RANGE_JOIN and stay linked until RANGE_LEAVE. The connected group that contains me is my cell. Its authority
+# is the incumbent: every authority advertises its cell to everyone (c.ad: member count, formation time), and
+# in a group the cell with the most members wins, then the oldest, then the lowest id. A player joining an
+# existing cell never takes authority; two solo players meeting pick the lowest id. A losing authority
+# resigns (c.leave with "to") and its members switch on the winner's c.state. When the authority leaves for
+# good, the lowest id of the rest promotes. The authority confirms the cell with c.state (reliable, on change
+# and every STATE_EVERY s); members act only on that. A member joining shifts its whole world onto the authority's
 # CurrentGame.globalOffset in one physics frame (same loop as the stock slipstream), suspends its spawner,
 # emits cell_joined and answers c.join. RockSync listens to the signals and frees, snaps and promotes rocks.
 #
@@ -15,6 +19,7 @@ extends Node
 #   switching cells:                 cell_left(), then cell_joined(newAuth) in the same tick
 #
 # Dev: --coop-warp-to-peer=<s>  s seconds after the dive cutscene ends, jump 20,000 px from the lowest-id peer.
+#      --coop-dev-slipstream=<s> as authority with confirmed members, force the stock slipstream every s seconds.
 
 signal cell_joined(authority_id)
 signal cell_left()
@@ -32,6 +37,10 @@ const SLIP_MARGIN = 150000.0   # authority slipstreams early once any member get
 const WARP_DISTANCE = 20000.0
 const LOG_EVERY = 5.0
 const PEER_STALE = 6.0          # same as CoopNet.BEACON_TIMEOUT
+const AD_EVERY = 1.0
+const AD_STALE = 3.5
+const RESIGN_GRACE = 2.0       # a resigned authority's in-flight beacons don't bring it back into the graph
+const MERGE_WAIT = 4.0         # member: our authority resigned to a bigger cell; wait this long for its c.state
 
 enum Role { SOLO, MEMBER, AUTHORITY }
 
@@ -45,6 +54,14 @@ var originGen = -1
 var cellMembers = []           # authority: my view of the cell; member: the authority's c.state list
 var confirmed = {}             # authority: id -> true once its c.join arrived
 var cellSeq = 0
+var born = 0                   # formation time of the cell (system ms), carried through handoffs
+var mergeTo = 0                # member: our authority resigned in favour of this authority's cell
+var mergeSince = 0.0
+var adverts = {}               # authority id -> {cid, n, born, at}: cells other machines run
+var resigned = {}              # id -> cid it resigned; its late packets for that cid are ignored
+var lastWinner = 0
+var ghost = null               # member: {n, born, until} of our cell after its authority died, held by the heir
+var adAccum = 0.0
 
 var edges = {}                 # "a:b" (a < b) -> linked, for hysteresis
 var lastComp = []
@@ -63,6 +80,9 @@ var warpAfter = -1.0
 var warpClock = 0.0
 var warpDone = false
 
+var devSlipEvery = -1.0
+var devSlipClock = 0.0
+
 func _ready():
 	name = "Cell"
 	# Run after BulletTimer and the rest of the game so the time-scale pin has the last word each tick.
@@ -71,9 +91,12 @@ func _ready():
 	net.on("c.join", self, "_onJoin")
 	net.on("c.leave", self, "_onLeave")
 	net.on("c.hb", self, "_onHb")
+	net.on("c.ad", self, "_onAd")
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-warp-to-peer="):
 			warpAfter = float(arg.substr(20))
+		elif arg.begins_with("--coop-dev-slipstream="):
+			devSlipEvery = float(arg.substr(22))
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 
@@ -126,8 +149,9 @@ func _physics_process(delta):
 		return
 	var now = _now()
 
-	if role == Role.MEMBER and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
+	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
 		lost[auth] = now
+		_setGhost(now)
 		_log("authority %s silent %.1f s, treating as gone" % [auth, now - heardAt.get(auth, now)])
 		viewAccum = 1.0
 
@@ -172,7 +196,7 @@ func _peerPos(id, now):
 		return CurrentGame.globalCoords(pp.global_position)
 	return b.p + b.get("v", Vector2(0, 0)) * min(now - pr.beaconAt, BEACON_EXTRAP_MAX)
 
-# My connected group, sorted by id (lowest = authority). [myId] when I'm not in the rings.
+# My connected group, sorted by id. [myId] when I'm not in the rings.
 func _view() -> Array:
 	var ship = _ship()
 	if ship == null:
@@ -220,16 +244,19 @@ func _decide(comp, now):
 			_leave("alone in view")
 		return
 
-	if comp[0] == net.myId:
+	var win = _winner(comp, now)
+	if win != lastWinner:
+		_log("winner of %s is %s" % [comp, win])
+		lastWinner = win
+
+	if win == net.myId:
 		match role:
 			Role.SOLO:
 				_becomeAuthority(comp)
 			Role.MEMBER:
+				# only when my authority is gone; a live one keeps the cell even if its advert went stale
 				if lost.has(auth) or not comp.has(auth):
 					_promote(comp)
-				else:
-					_leave("authority %s no longer lowest" % auth)
-					_becomeAuthority(comp)
 			Role.AUTHORITY:
 				if comp != cellMembers:
 					_log("view %s -> %s" % [cellMembers, comp])
@@ -241,12 +268,15 @@ func _decide(comp, now):
 					stateDirty = true
 		return
 
-	# someone lower is in my group: wait for its c.state (handled in _onState)
+	# another cell (or a lower solo id) wins: wait for its c.state (handled in _onState)
 	match role:
 		Role.AUTHORITY:
-			_leave("lower id %s in view" % comp[0])
+			_leave("cell of %s wins" % win, win)
 		Role.MEMBER:
-			if comp.has(auth):
+			if mergeTo != 0:
+				if now - mergeSince > MERGE_WAIT:
+					_leave("no c.state from %s after the merge" % mergeTo)
+			elif comp.has(auth):
 				orphanSince = -1.0
 			elif orphanSince < 0:
 				orphanSince = now
@@ -258,6 +288,7 @@ func _becomeAuthority(comp):
 	auth = net.myId
 	cellSeq += 1
 	cid = "%s:%d" % [net.myId, cellSeq]
+	born = OS.get_system_time_msecs()
 	off = CurrentGame.globalOffset
 	originGen = 0
 	cellMembers = comp
@@ -266,6 +297,7 @@ func _becomeAuthority(comp):
 	_log("FORMED cell %s as authority, view=%s off=%s" % [cid, comp, off])
 	emit_signal("cell_joined", net.myId)
 	_sendState()
+	_sendAd()
 
 # Member -> authority of the same cell (the old authority left). Origin and cid carry over.
 func _promote(comp):
@@ -281,19 +313,24 @@ func _promote(comp):
 	cellMembers = comp
 	_setSpawner(true)
 	_log("PROMOTED to authority of %s (was %s), view=%s gen=%d" % [cid, old, comp, originGen])
+	mergeTo = 0
+	ghost = null
 	emit_signal("authority_changed", net.myId)
 	if comp.size() > 1:
 		_sendState()
+		_sendAd()
 
-func _leave(why):
+# to: the authority whose cell beat mine (my members wait for its c.state); 0 = leaving for good.
+func _leave(why, to = 0):
 	if role == Role.SOLO:
 		return
 	if role == Role.MEMBER:
 		if not lost.has(auth) and net.peers.has(auth):
 			net.send(auth, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
 	else:
-		# resign: members drop me as authority at once and the next-lowest promotes, keeping the cell's rocks
-		net.sendTo(cellMembers, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
+		# resign: with to == 0 the lowest of the rest promotes and keeps the cell's rocks
+		net.sendTo(cellMembers, {"t": "c.leave", "cid": cid, "gen": originGen, "to": to}, true)
+		net.sendTo(net.peers.keys(), {"t": "c.ad", "cid": cid, "n": 0, "born": born}, false)
 	_log("LEFT cell %s as %s (%s)" % [cid, Role.keys()[role], why])
 	role = Role.SOLO
 	auth = net.myId
@@ -302,6 +339,8 @@ func _leave(why):
 	cellMembers = []
 	confirmed = {}
 	orphanSince = -1.0
+	mergeTo = 0
+	ghost = null
 	_setSpawner(true)
 	emit_signal("cell_left")
 
@@ -311,7 +350,10 @@ func _join(from, msg):
 	cid = msg.cid
 	cellMembers = msg.members
 	originGen = msg.gen
+	born = msg.get("born", 0)
 	orphanSince = -1.0
+	mergeTo = 0
+	ghost = null
 	_adopt(msg.off)
 	_setSpawner(false)
 	_log("JOINED cell %s, authority %s, members=%s gen=%d" % [cid, auth, cellMembers, originGen])
@@ -337,6 +379,10 @@ func _authorityTick(delta):
 	if stateDirty or stateAccum >= STATE_EVERY:
 		_sendState()
 
+	adAccum += delta
+	if adAccum >= AD_EVERY:
+		_sendAd()
+
 	hbAccum += delta
 	if hbAccum >= 1.0 / HB_HZ:
 		hbAccum = 0.0
@@ -345,6 +391,12 @@ func _authorityTick(delta):
 	# Members may sit up to RANGE_LEAVE from me; slipstream before any of them reaches its own radius,
 	# because a member's stock slipstream would move its origin away from the cell's.
 	var f = _field()
+	if f != null and devSlipEvery > 0 and confirmed.size() > 0:
+		devSlipClock += delta
+		if devSlipClock >= devSlipEvery:
+			devSlipClock = 0.0
+			_log("dev slipstream forced at gen %d" % originGen)
+			Tool.deferCallWhenIdle(f, "slipstream", [], true)
 	if f != null:
 		var now = _now()
 		for id in cellMembers:
@@ -359,7 +411,64 @@ func _authorityTick(delta):
 func _sendState():
 	stateDirty = false
 	stateAccum = 0.0
-	net.sendTo(cellMembers, {"t": "c.state", "cid": cid, "auth": net.myId, "members": cellMembers, "off": off, "gen": originGen}, true)
+	net.sendTo(cellMembers, {"t": "c.state", "cid": cid, "auth": net.myId, "members": cellMembers, "off": off, "gen": originGen, "n": members().size(), "born": born}, true)
+
+func _sendAd():
+	adAccum = 0.0
+	net.sendTo(net.peers.keys(), {"t": "c.ad", "cid": cid, "n": members().size(), "born": born}, false)
+
+# Our authority died: until the heir advertises, the cell's last advert stands for the heir (lowest surviving
+# member), so a solo player in range can't take the cell over during the handoff.
+func _setGhost(now):
+	var ad = adverts.get(auth)
+	ghost = {
+		"n": ad.n if ad != null else cellMembers.size(),
+		"born": ad.born if ad != null else born,
+		"until": now + MERGE_WAIT,
+	}
+
+func _heir():
+	var h = -1
+	for id in cellMembers:
+		if id != auth and not lost.has(id) and (id == net.myId or net.peers.has(id)) and (h < 0 or id < h):
+			h = id
+	return h
+
+# Size and age of the cell a player runs, {n, born}, or null if it runs none.
+func _cellInfo(id, now):
+	if ghost != null and role == Role.MEMBER and now < ghost.until and id == _heir():
+		return ghost
+	if id == net.myId:
+		if role == Role.AUTHORITY:
+			return {"n": members().size(), "born": born}
+		return null
+	var ad = adverts.get(id)
+	if ad != null and now - ad.at < AD_STALE:
+		return ad
+	return null
+
+# The authority for a connected group: the incumbent cell (most members, then oldest, then lowest id);
+# with no cell in the group, the lowest id.
+func _winner(comp, now):
+	var best = comp[0]
+	var bestInfo = null
+	for id in comp:
+		var info = _cellInfo(id, now)
+		if info == null:
+			continue
+		if bestInfo == null or info.n > bestInfo.n or (info.n == bestInfo.n and (info.born < bestInfo.born or (info.born == bestInfo.born and id < best))):
+			best = id
+			bestInfo = info
+	return best
+
+func _noteAd(from, msg):
+	if msg.get("n", 0) <= 0:
+		adverts.erase(from)
+	else:
+		adverts[from] = {"cid": msg.get("cid"), "n": msg.get("n"), "born": msg.get("born", 0), "at": _now()}
+
+func _isResigned(from, msg):
+	return resigned.has(from) and resigned[from] == msg.get("cid")
 
 func _onJoin(from, msg):
 	_heard(from)
@@ -378,8 +487,17 @@ func _onJoin(from, msg):
 
 func _onLeave(from, msg):
 	if role == Role.MEMBER and from == auth and msg.get("cid") == cid:
-		lost[auth] = _now()
-		_log("authority %s resigned" % from)
+		resigned[from] = cid
+		var to = msg.get("to", 0)
+		if to != 0:
+			mergeTo = to
+			mergeSince = _now()
+			adverts.erase(from)
+			_log("authority %s resigned to %s's cell, waiting for its c.state" % [from, to])
+		else:
+			lost[auth] = _now() + RESIGN_GRACE
+			_setGhost(_now())
+			_log("authority %s resigned" % from)
 		viewAccum = 1.0
 		return
 	_heard(from)
@@ -388,7 +506,13 @@ func _onLeave(from, msg):
 		_log("member %s left, members=%s" % [from, members()])
 
 func _onHb(from, msg):
-	_heard(from)
+	if not _isResigned(from, msg):
+		_heard(from)
+
+func _onAd(from, msg):
+	if _isResigned(from, msg):
+		return
+	_noteAd(from, msg)
 
 func _heard(from):
 	heardAt[from] = _now()
@@ -399,7 +523,11 @@ func _heard(from):
 # ---------------------------------------------------------------- member
 
 func _onState(from, msg):
+	if _isResigned(from, msg):
+		_log("late c.state from %s for resigned cell %s ignored" % [from, msg.cid])
+		return
 	_heard(from)
+	_noteAd(from, msg)
 	var listed = msg.members
 	if not listed.has(net.myId):
 		if role == Role.MEMBER and from == auth:
@@ -407,15 +535,17 @@ func _onState(from, msg):
 		return
 	# Same cell from another member: the authority handed off (its view lost the old one before mine did).
 	var sameCell = role == Role.MEMBER and msg.cid == cid and cellMembers.has(from)
-	if not sameCell and (lastComp.size() < 2 or lastComp[0] != from):
-		# not the lowest id in my own view (yet); it resends every 2 s
+	if not sameCell and from != mergeTo and (not lastComp.has(from) or _winner(lastComp, _now()) != from):
+		# not the winner in my own view (yet); it resends every 2 s
 		return
 
 	if sameCell:
 		cellMembers = listed
+		born = msg.get("born", born)
 		if from != auth:
 			var old = auth
 			auth = from
+			ghost = null
 			_log("authority %s -> %s in cell %s" % [old, from, cid])
 			if msg.off != off or msg.gen != originGen:
 				originGen = msg.gen
