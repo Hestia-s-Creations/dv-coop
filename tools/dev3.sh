@@ -5,7 +5,8 @@
 #   A: ~/dvcoop-data, dives at the dev target
 #   B: copy, dives OFF_B px off (default 5,000, in range of A; OFF_B=1200 puts A and B on one screen)
 #   C: copy, dives OFFSET_C px off (default 60,000: out of range), then warps to 20,000 px from the
-#      lowest-id peer WARP_C seconds after its dive starts (WARP_C=0 turns the warp off)
+#      cell authority WARP_C seconds after its dive starts (WARP_C=0 turns the warp off); WARP_C_DIST sets how
+#      close (default 20,000 px; 300 frames C and the authority on one screen)
 # Works on Windows (Git Bash) and Linux; paths come from tools/dvenv.sh. Stop with tools/stop.sh.
 # Usage: tools/dev3.sh [offset_c_x] [slot_b] [slot_c]
 set -e
@@ -19,11 +20,12 @@ OFF_C="${1:-60000}"
 SLOT_B="${2:-savegame-b.dv}"
 SLOT_C="${3:-savegame.dv}"
 WARP_C="${WARP_C:-25}"
+WARP_C_DIST="${WARP_C_DIST:-20000}"
 OFF_B="${OFF_B:-5000}"
 # DIVE_X, DIVE_Y move the whole formation off the dev target (e.g. into a denser part of the ring)
 DIVE_X="${DIVE_X:-0}"
 DIVE_Y="${DIVE_Y:-0}"
-WARP=(); [ "$WARP_C" != 0 ] && WARP=(--coop-warp-to-peer="$WARP_C")
+WARP=(); [ "$WARP_C" != 0 ] && WARP=(--coop-warp-to-peer="$WARP_C,$WARP_C_DIST")
 
 "$DV_PY" -I tools/build.py
 

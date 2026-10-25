@@ -548,6 +548,9 @@ func _spawnPuppet(id, game):
 		Debug.l("COOP: puppet createShipByConfig failed for %s" % id)
 		pr.cfg = null
 		return
+	var claims = _stripClaims(ship)
+	if claims > 0:
+		Debug.l("COOP: puppet for %s: %d drone/claim spawner(s) emptied" % [id, claims])
 	ship.netControlled = true
 	ship.ai = false
 	ship.playerControlled = false
@@ -576,6 +579,24 @@ func _hideOverlay():
 	if overlay != null and is_instance_valid(overlay):
 		overlay.queue_free()
 	overlay = null
+
+# ClaimOwner moves its children (drones, claimed modules) into the field as separate ships when the ship
+# enters the tree. On a puppet that would spawn the other player's drones as our own AI ships, so empty
+# every ClaimOwner first; the owner's real drones get replicated separately (M4).
+const CLAIM_OWNER = "res://ships/modules/ClaimOwner.gd"
+
+func _stripClaims(node) -> int:
+	var count = 0
+	for child in node.get_children():
+		var s = child.get_script()
+		if s != null and s.resource_path == CLAIM_OWNER:
+			for c in child.get_children():
+				child.remove_child(c)
+				c.queue_free()
+			count += 1
+		else:
+			count += _stripClaims(child)
+	return count
 
 func _despawnPuppet(id, why):
 	if not peers.has(id):
