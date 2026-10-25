@@ -44,6 +44,7 @@ var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
+var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 
 func _ready():
 	name = "DevBot"
@@ -268,6 +269,7 @@ func _clawEnd(arm, result, now):
 		Debug.l("COOP: BOT claw trial=%d id=%s result=%s" % [trial, claw.id, result])
 		if keepLast and attempts < MAX_ATTEMPTS:
 			attempts += 1
+			skipIds[claw.id] = true
 			trial -= 1   # hold mode needs a rock in the claw: try again with another rock
 	results.erase(claw.id)
 	arm.enabled = false
@@ -281,7 +283,7 @@ func _pickClawRock(ship) -> String:
 	var bestD = 0.0
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
-		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id):
+		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) 				or skipIds.has(id):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
 		if best == "" or d < bestD:
