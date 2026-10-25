@@ -37,6 +37,7 @@ var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
 var lastAuth = -1     # member: the authority we last reported our rocks to (o.list)
 var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
+var told = {}         # authority: members we've sent the ownership table to
 
 # conservation (authority): every rock that entered and left this field, by reason
 var cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -568,6 +569,7 @@ func _physics_process(delta):
 		_reportOwned()
 		_sendBorn()
 	if role == "authority":
+		_tellNewMembers()
 		_reownLost()
 		for id in tomb.keys():
 			if now - tomb[id] > TOMB_SECONDS:
@@ -615,12 +617,32 @@ func _changeRole(from, to):
 		owners.clear()
 		epoch.clear()
 	lastAuth = -1
+	told.clear()
+	heard.clear()
 	role = to
 	cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
 	if to == "authority":
 		cons.born = _liveRocks().size()   # baseline: everything already in the field
 
 # ---------------------------------------------------------------- disconnect and handoff
+
+# Authority: a member who joined after a rock changed hands never saw that o.chg; without it, it would ignore the
+# owner's o.u (wrong sender) and its copy would coast. Send it the table once.
+func _tellNewMembers():
+	var members = _cell().members()
+	for p in told.keys():
+		if not (p in members):
+			told.erase(p)
+	for p in members:
+		if p == net.myId or told.has(p):
+			continue
+		told[p] = true
+		for id in owners:
+			net.send(p, {"t": "o.chg", "id": id, "owner": owners[id], "e": epochOf(id)}, true)
+		for id in heldHere:
+			net.send(p, {"t": "o.chg", "id": id, "owner": net.myId, "e": epochOf(id)}, true)
+		if not owners.empty():
+			Debug.l("COOP: OWN told new member %s about %d player-owned rocks" % [p, owners.size()])
 
 # Authority: a player who owns rocks has left the cell (quit, crashed, flew off). Its rocks come back to us at their
 # last streamed state (the tracked copy is already there).
@@ -712,7 +734,7 @@ func _onRockGone(id, node):
 		if node.get("fracturing") == true:
 			mine.erase(id)
 			fractured[id] = true
-		elif node.collision_layer == DISABLED_LAYER:
+		elif node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true:
 			eat(node, "mpu")
 		else:
 			_release(id, node, "left-field")
@@ -724,7 +746,8 @@ func _onRockGone(id, node):
 		cons.gone += 1
 		cons.gone_by["fracture"] = cons.gone_by.get("fracture", 0) + 1
 		return
-	if node.collision_layer == DISABLED_LAYER and not eatenIds.has(id) and not owners.has(id):
+	# the MPU and a fracturing asteroid both park the rock on this layer; only the first is an eat
+	if node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true and not eatenIds.has(id) and not owners.has(id):
 		_tombstone(id, node.getComposition().duplicate() if node.has_method("getComposition") else {}, "mpu")
 		heldHere.erase(id)
 	cons.gone += 1
