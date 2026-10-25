@@ -17,7 +17,7 @@ ae012c4b0bc9b5c50bc4de3062c9983bc10d623efc94be9e36c2d47e410ccf56  src/dv-coop/ex
 b8089764d174c6847d4d6a4691a1037a666c8ca004561a96e732c88737aceb26  src/dv-coop/ext/asteroid.gd
 f37222d0c9c1db633fa9e92d889a620e942814b4696ae40035e383cd43093aea  src/dv-coop/ext/ship-ctrl.gd
 0c59b19ec173180543493871508a5866728d4e2733d200bf0aba6bf0613d3eba  src/dv-coop/ext/thruster.gd
-2b9b67591bfc3cfe4d428e3e745a8fdce2893690acfbb201b72c14acb17ebb17  src/dv-coop/modmain.gd
+932133c1a1a457e979a9e01ee9b96a5417e4f7ef09d62f6697c00b74dcf51d8c  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
 f48a0f7f1d2efa739fe3fb43f397a143331b544f7a65b197637edddd94f58159  src/dv-coop/net/DevBot.gd
