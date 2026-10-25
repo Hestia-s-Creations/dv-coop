@@ -12,8 +12,17 @@ extends "res://asteroids/asteroid.gd"
 
 func _fxOnly() -> bool:
 	if Engine.has_meta("dvcoop_fx_only"):
+		_countFxOnly()
 		return true
 	return has_meta("dvnet_tracked")
+
+# Gate 7 evidence: how many rock damage calls a puppet's weapons made here (all turned into effects only), summed
+# into the Ships track's 5 s summary as rockFxOnly.
+func _countFxOnly():
+	if ModLoader.has_meta("dvcoop"):
+		var npc = ModLoader.get_meta("dvcoop").get_node_or_null("Npc")
+		if npc != null and npc.has_method("count"):
+			npc.count("rockFxOnly", 1)
 
 func _forward(kind, amount, point, delta):
 	if Engine.has_meta("dvcoop_fx_only") or not Engine.has_meta("dvcoop_forward") or not has_meta("dvnet_tracked"):

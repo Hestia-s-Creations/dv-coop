@@ -14,7 +14,7 @@ ee2fe13a4df1147d605c3d3d020a9a49614a27ab8af298aa241505ef194d75ce  docs/SPEC.md
 8d1d1c7b4e805e6b71daa3682255126e28eea3fa61c0be523ddc6542aa5a7c4d  src/dv-coop/ext/AsteroidSpawner.gd
 f85d665958a0787ac9292ec49afb1775ebb87570a83d74154b57c44de06102bf  src/dv-coop/ext/DockingArm.gd
 ae012c4b0bc9b5c50bc4de3062c9983bc10d623efc94be9e36c2d47e410ccf56  src/dv-coop/ext/MineralProcessingUnit.gd
-b8089764d174c6847d4d6a4691a1037a666c8ca004561a96e732c88737aceb26  src/dv-coop/ext/asteroid.gd
+efc77ddc7ca12350a35a16baeb14250c673c683dc0367388866ab2a4876c686a  src/dv-coop/ext/asteroid.gd
 f37222d0c9c1db633fa9e92d889a620e942814b4696ae40035e383cd43093aea  src/dv-coop/ext/ship-ctrl.gd
 0c59b19ec173180543493871508a5866728d4e2733d200bf0aba6bf0613d3eba  src/dv-coop/ext/thruster.gd
 932133c1a1a457e979a9e01ee9b96a5417e4f7ef09d62f6697c00b74dcf51d8c  src/dv-coop/modmain.gd
