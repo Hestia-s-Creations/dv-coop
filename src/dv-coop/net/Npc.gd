@@ -8,8 +8,10 @@ extends Node
 # pods   a player whose ship died flies its lifepod (beacon kind "pod"). A lifepod is a plain RigidBody2D, not a
 #        ship-ctrl ship, so it can't be a CoopNet puppet; it is mirrored here as a kinematic Lifepod placed from
 #        the owner's 20 Hz state (peers[id].state), tagged dvnet_puppet so claws and holds leave it alone.
-# NPCs   the cell authority runs every NPC ship (members' spawners and story are off). Each NPC built by Shipyard
-#        gets a net id (meta dvnet_npc). The authority sends its recipe (n.s: Shipyard fullConfig with transponder,
+# NPCs   whoever simulates an NPC ship streams it to the rest of the cell: the authority for everything its spawner
+#        and story make (members' spawners and story are off), and a member for the save- or story-bound NPCs it
+#        brought with it (on joining, its other NPCs are freed quietly; see _onCellJoined). Each NPC built by Shipyard
+#        gets a net id (meta dvnet_npc). Its runner sends its recipe (n.s: Shipyard fullConfig with transponder,
 #        madeIn, faction and name filled in, so building it writes nothing to the member's save) to each member it
 #        is within NPC_RANGE of, then state (n.u) and intent (n.i: thrusters, fired systems, turrets) at 10 Hz, and
 #        n.d when it leaves range, despawns or explodes. Members build a netControlled mirror tagged
@@ -62,6 +64,35 @@ func _ready():
 	net.on("n.i", self, "_onNpcIntent")
 	net.on("n.d", self, "_onNpcGone")
 	net.on("d.ship", self, "_onShipHits")
+	call_deferred("_hookCell")
+
+func _hookCell():
+	var cell = net.get_node_or_null("Cell")
+	if cell != null:
+		cell.connect("cell_joined", self, "_onCellJoined")
+
+# Joining someone else's cell: the NPCs my spawner and story made are this machine's alone, so they go, like my
+# rocks. Quietly (the field's kill(), the stock despawn path), never vanish(), which writes the save and drops
+# lifepods. Kept and streamed as mine: ships the game marks essential (story ships, anyone mid-dialog), player-faction
+# ships (my drones and fleet), and anything docked to or held by my ship.
+func _onCellJoined(authority_id):
+	var cell = _cell()
+	var field = _field()
+	if cell == null or field == null or cell.isAuthority():
+		return
+	var me = net.localShip
+	var freed = []
+	var kept = []
+	for c in field.get_children():
+		if not _isNpc(c):
+			continue
+		var held = me != null and is_instance_valid(me) and (c.get("docked") == me or me.temporaryCargo.has(c) or me.cargo.has(c))
+		if c.essential or c.faction == "player" or held:
+			kept.append("%s/%s" % [c.transponder, c.getShipName()])
+		else:
+			freed.append(c.transponder)
+			field.kill(c)
+	_log("joined %s's cell: freed %d NPCs of mine %s, kept %d as mine %s" % [authority_id, freed.size(), freed, kept.size(), kept])
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-dev-explode="):
 			explodeAfter = float(arg.substr(19))
@@ -219,7 +250,7 @@ func _npcTick(delta):
 	var field = _field()
 	if cell == null or field == null:
 		return
-	if not (cell.inCell() and cell.isAuthority()):
+	if not cell.inCell():
 		if npcs.size() > 0:
 			npcs = {}
 			known = {}
@@ -300,7 +331,7 @@ func _recipe(id, c) -> Dictionary:
 func _onNpcSpawn(from, msg):
 	var cell = _cell()
 	var field = _field()
-	if field == null or cell == null or not cell.inCell() or cell.authority() != from:
+	if field == null or cell == null or not cell.inCell() or not cell.members().has(from):
 		return
 	for rc in msg.l:
 		if mirrors.has(rc.id) and is_instance_valid(mirrors[rc.id]):
@@ -357,11 +388,11 @@ func _pruneMirrors():
 	var cell = _cell()
 	for id in mirrors.keys():
 		var m = mirrors[id]
-		if not is_instance_valid(m) or cell == null or not cell.inCell() or cell.isAuthority() or m.get_meta("dvnet_mirror") != cell.authority():
+		if not is_instance_valid(m) or cell == null or not cell.inCell() or not cell.members().has(m.get_meta("dvnet_mirror")):
 			if is_instance_valid(m):
 				m.queue_free()
 			mirrors.erase(id)
-			_log("mirror %s dropped (authority changed or cell left)" % id)
+			_log("mirror %s dropped (its runner left the cell, or I did)" % id)
 
 # ---------------------------------------------------------------- d.ship
 
