@@ -203,7 +203,11 @@ func _findWeapon(n):
 			return r
 	return null
 
+var ammoGiven = false
+
 func _shootTick():
+	if mode == "massdriver":
+		_fit("SYSTEM_EMD14", "right")
 	var c = _cell()
 	if c == null or not c.inCell() or c.isAuthority():
 		inCellSince = -1.0
@@ -214,6 +218,10 @@ func _shootTick():
 	var ship = net.localShip
 	if ship == null or not is_instance_valid(ship) or ship.get("cutscene") == true or now - inCellSince < SETTLE:
 		return
+	if mode == "massdriver" and not ammoGiven and ship.has_method("addAmmo"):
+		ammoGiven = true
+		ship.addAmmo(5000)
+		Debug.l("COOP: BOT massdriver: +5000 kg ammo")
 	var w = _findWeapon(ship)
 	if w == null:
 		if not noWeaponLogged:
@@ -294,17 +302,26 @@ func _pickTarget() -> String:
 
 # Fit a salvage arm into the dev save's ship right after autodive loads the save, before the Game scene builds it.
 func _fitArm():
+	_fit("SYSTEM_SALVAGE_ARM", "left")
+
+# Fit `system` into a weapon slot of the dev save's ship right after autodive loads the save, before the Game
+# scene builds the ship (dev data only; the bot never runs without its flag).
+func _fit(system, prefer):
 	if armFitted or not net.autoDiveStarted:
 		return
 	armFitted = true
 	var cfg = CurrentGame.state.ship.get("config", {})
 	var ws = cfg.get("weaponSlot", {})
 	if ws.empty():
-		Debug.l("COOP: BOT claw: ship has no weapon slots in its config, cannot fit an arm")
+		Debug.l("COOP: BOT %s: ship has no weapon slots in its config, cannot fit %s" % [mode, system])
 		return
-	var slot = "left" if ws.has("left") else ws.keys()[0]
-	Debug.l("COOP: BOT claw: fitting SYSTEM_SALVAGE_ARM to weaponSlot.%s (was %s)" % [slot, ws[slot].get("type")])
-	ws[slot]["type"] = "SYSTEM_SALVAGE_ARM"
+	for k in ws:
+		if ws[k].get("type") == system:
+			Debug.l("COOP: BOT %s: %s already fitted in weaponSlot.%s" % [mode, system, k])
+			return
+	var slot = prefer if ws.has(prefer) else ws.keys()[0]
+	Debug.l("COOP: BOT %s: fitting %s to weaponSlot.%s (was %s)" % [mode, system, slot, ws[slot].get("type")])
+	ws[slot]["type"] = system
 
 func _arm():
 	var ship = net.localShip
