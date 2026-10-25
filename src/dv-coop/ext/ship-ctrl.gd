@@ -140,9 +140,14 @@ func _coopCount(what, n):
 	if npc != null:
 		npc.count(what, n)
 
-# A local weapon (forwarding context) hitting the mirror of an NPC another machine runs: send it there (Npc.gd d.ship).
+# A local weapon hitting the mirror of an NPC another machine runs: send it there (Npc.gd d.ship). Beam damage
+# forwards only inside a local weapon's forwarding window. Hostility forwards from any local context that isn't a
+# puppet's replay: bullets (projectile.gd :83) apply it on the shooter's machine only, since the other machines'
+# b.new copies carry no shooter; their damage needs no forwarding, the owner's copy of the bullet hits the real ship.
 func _coopForward(kind, a, b = null, c = null) -> bool:
-	if not (netControlled and has_meta("dvnet_mirror") and Engine.has_meta("dvcoop_forward")):
+	if not (netControlled and has_meta("dvnet_mirror")) or Engine.has_meta("dvcoop_fx_only"):
+		return false
+	if kind != "h" and not Engine.has_meta("dvcoop_forward"):
 		return false
 	var net = _coopNet()
 	var npc = net.get_node_or_null("Npc") if net != null else null
@@ -179,6 +184,39 @@ func setDummy(how, always = false):
 	if netControlled and not had and CurrentGame.state.get("dispositions", {}).has(id):
 		disposition = CurrentGame.state.dispositions[id].duplicate(true)
 		CurrentGame.state.dispositions.erase(id)
+
+# Cargo hold and ore accounting (tim-58's Own.gd): a body only counts in my hold once I own it, leaving releases
+# it, and carrying cargo out of the ring reports what was eaten first. Puppets never run a hold of their own.
+
+func _coopOwn():
+	var net = _coopNet()
+	return net.get_node_or_null("Own") if net != null else null
+
+func processCargoBodyEntry(delta: float):
+	if netControlled:
+		return
+	.processCargoBodyEntry(delta)
+
+func processEnteringCargoBay(body):
+	var own = _coopOwn()
+	if not netControlled and own != null and not own.holdEnter(self, body):
+		return
+	return .processEnteringCargoBay(body)
+
+func processExitingCargoBay(body):
+	var r = .processExitingCargoBay(body)
+	var own = _coopOwn()
+	if own != null:
+		own.holdExit(self, body)
+	return r
+
+func claimCargo(claimFor = self):
+	if netControlled:
+		return
+	var own = _coopOwn()
+	if own != null:
+		own.beforeClaimCargo(self)
+	return .claimCargo(claimFor)
 
 func vanish(except = []):
 	if netControlled:
