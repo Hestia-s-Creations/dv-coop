@@ -13,7 +13,7 @@ ee2fe13a4df1147d605c3d3d020a9a49614a27ab8af298aa241505ef194d75ce  docs/SPEC.md
 2c7cfdd5add7f9eca654f56a0bbad8e0579890dbebc4c23df30e647e3b7e144b  llms.txt
 8d1d1c7b4e805e6b71daa3682255126e28eea3fa61c0be523ddc6542aa5a7c4d  src/dv-coop/ext/AsteroidSpawner.gd
 12c6e0f048b742d0df885a3c806da0c8d2e52f2dfd1ec477861c4dc5ce543b7b  src/dv-coop/ext/asteroid.gd
-70c47e9768314cf02f49bfc4c9b5637bad13ce5cbba99688b6aa181069a3f910  src/dv-coop/ext/ship-ctrl.gd
+f37222d0c9c1db633fa9e92d889a620e942814b4696ae40035e383cd43093aea  src/dv-coop/ext/ship-ctrl.gd
 6597e25d07e2eb16f9bcf3eef038f6fd5f47ea95290e7a3770f5561e93552c63  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
