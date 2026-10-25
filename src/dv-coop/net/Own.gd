@@ -13,6 +13,7 @@ const CLAIM_TIMEOUT = 0.5      # s without an answer counts as a deny
 const STREAM_HZ = 20.0         # o.u rate for rocks a player owns
 const CONSERVE_EVERY = 30.0    # s between conservation log lines (authority)
 const TOMB_SECONDS = 30.0
+const OWNER_SILENT = 1.2       # s without an o.u from a player who owns rocks: it's gone, take them back
 
 signal denied(id, reason)      # our claim on id was refused (or timed out); whoever touched it lets go
 signal granted(id)
@@ -35,6 +36,7 @@ var streamAccum = 0.0
 var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
 var lastAuth = -1     # member: the authority we last reported our rocks to (o.list)
+var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
 
 # conservation (authority): every rock that entered and left this field, by reason
 var cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -357,6 +359,7 @@ func _on_o_req(from, msg):
 	var e = epochOf(id) + 1
 	epoch[id] = e
 	owners[id] = from
+	heard[from] = _now()
 	rs.track(id, node, node.global_position, node.global_rotation, node.linear_velocity, node.angular_velocity)
 	net.send(from, {"t": "o.ok", "id": id, "e": e,
 		"p": node.global_position, "r": node.global_rotation, "v": node.linear_velocity, "w": node.angular_velocity}, true)
@@ -450,6 +453,7 @@ func _on_o_chg(from, msg):
 # ---------------------------------------------------------------- streams
 
 func _on_o_u(from, msg):
+	heard[from] = _now()
 	var l = msg.get("l")
 	if not (l is Array):
 		return
@@ -614,10 +618,13 @@ func _changeRole(from, to):
 func _reownLost():
 	var c = _cell()
 	var members = c.members()
+	var now = _now()
 	var lost = {}
 	for id in owners.keys():
 		var p = owners[id]
-		if p != net.myId and not (p in members):
+		# gone from the cell, or silent: an owner streams o.u at STREAM_HZ for as long as it owns anything, so a crash
+		# shows here well before the cell's own timeout drops it
+		if p != net.myId and (not (p in members) or now - heard.get(p, now) > OWNER_SILENT):
 			lost[id] = p
 	if lost.empty():
 		return
