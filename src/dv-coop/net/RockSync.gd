@@ -45,6 +45,8 @@ var farAccum = 0.0
 var interestAccum = 0.0
 var logAccum = 0.0
 var screenDump = false     # dev: DVCOOP_RS_SCREEN=1 also logs the camera transform and every rock on screen
+var puppetProbe = false   # dev: DVCOOP_RS_PUPPETS=1 logs rock clearance around ships after a snapshot, and hull impacts
+var probeUntil = 0
 var mineralLog = 0         # dev: DVCOOP_RS_MINERALS=1 logs the first few minerals sent (authority) / built (member)
 var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
 var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
@@ -59,6 +61,7 @@ func _ready():
 		logEvery = max(0.2, float(sample))
 		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
 	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
+	puppetProbe = OS.get_environment("DVCOOP_RS_PUPPETS") == "1"
 	mineralLog = 5 if OS.get_environment("DVCOOP_RS_MINERALS") == "1" else 0
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
@@ -317,7 +320,7 @@ func _freeOwnRocks():
 	var n = 0
 	for id in rocks.keys():
 		var node = rocks[id]
-		if is_instance_valid(node) and not node.has_meta("dvnet_tracked"):
+		if is_instance_valid(node) and not node.has_meta("dvnet_tracked") and not node.has_meta("dvnet_puppet"):
 			field.kill(node, true)
 			n += 1
 	rocks.clear()
@@ -508,6 +511,8 @@ func _onSpawn(from, msg):
 				pruned += 1
 		Debug.l("COOP: RS snapshot from %s applied: %d tracked, %d pruned" % [from, tracked.size(), pruned])
 		snapSeen = null
+		if puppetProbe:
+			_probeShips()
 
 func _onDespawn(from, msg):
 	var cell = _cell()
@@ -584,6 +589,38 @@ func _memberTick(delta, cell):
 				n.linear_velocity = lv
 			if abs(av - n.angular_velocity) > 0.005:
 				n.angular_velocity = av
+
+# ---------------------------------------------------------------- dev probe: rocks built onto ships
+
+func _ships() -> Array:
+	var out = []
+	if net.localShip != null and is_instance_valid(net.localShip):
+		out.append(net.localShip)
+	for id in net.peers:
+		var pp = net._puppetOf(id)
+		if pp != null:
+			out.append(pp)
+	return out
+
+func _probeShips():
+	for ship in _ships():
+		var best = null
+		var bestId = ""
+		for id in tracked:
+			var n = tracked[id].n
+			if is_instance_valid(n):
+				var gap = n.global_position.distance_to(ship.global_position) - n.estimatedRadius
+				if best == null or gap < best:
+					best = gap
+					bestId = id
+		Debug.l("COOP: RS probe ship '%s' puppet=%s: nearest tracked rock %s, centre gap minus rock radius %.0f px" % [ship.name, ship.has_meta("dvnet_puppet"), bestId, best if best != null else -1])
+		if not ship.is_connected("damageImpact", self, "_onProbeImpact"):
+			ship.connect("damageImpact", self, "_onProbeImpact", [ship])
+	probeUntil = OS.get_ticks_msec() + 20000
+
+func _onProbeImpact(power, point, delta, ship):
+	if OS.get_ticks_msec() < probeUntil and power > 50:
+		Debug.l("COOP: RS probe impact on '%s' puppet=%s power=%.0f at %s" % [ship.name, ship.has_meta("dvnet_puppet"), power, CurrentGame.globalCoords(point)])
 
 # ---------------------------------------------------------------- logging
 
