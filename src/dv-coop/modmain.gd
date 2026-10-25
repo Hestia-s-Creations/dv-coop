@@ -13,7 +13,15 @@ const GAME_BUILD_EXPECTED = "1.90.12"
 const EXTENSIONS = [
 	"res://dv-coop/ext/asteroid.gd",
 	"res://dv-coop/ext/AsteroidSpawner.gd",
+	"res://dv-coop/ext/DockingArm.gd",
 	"res://dv-coop/ext/ship-ctrl.gd",
+	"res://dv-coop/ext/laser.gd",
+	"res://dv-coop/ext/emp.gd",
+	"res://dv-coop/ext/synchrotron.gd",
+	"res://dv-coop/ext/drone-plant.gd",
+	"res://dv-coop/ext/PDT.gd",
+	"res://dv-coop/ext/Reactor.gd",
+	"res://dv-coop/ext/FusionReactor.gd",
 	"res://dv-coop/ext/CurrentGame.gd",
 	"res://dv-coop/ext/BulletTimer.gd",
 ]

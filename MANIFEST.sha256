@@ -21,9 +21,9 @@ f19433ac1e2eb5347c3dd1686c4a7d59746834501ed1df990dd474433826c356  src/dv-coop/ex
 be4e2840bea26662ca944ba1e31d20286d011f4092f54f3e419dc00360ff1eae  src/dv-coop/ext/laser.gd
 e84bec2fed31f39e3b36fb2b9e1cfafb20f901068449a77696f986231d67717d  src/dv-coop/ext/ship-ctrl.gd
 cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ext/synchrotron.gd
-4224855372f9b56337118d342413baf171b8a4561affb117a3679fc62fa84b74  src/dv-coop/modmain.gd
+6597e25d07e2eb16f9bcf3eef038f6fd5f47ea95290e7a3770f5561e93552c63  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
-e23f121567be2010bcb5d31bec1643432172a3d22c4e868a3f9e16f34b848150  src/dv-coop/net/CoopNet.gd
+9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
 72f69641e326ed6de897b75f876a104a3203b1ce0c76747dd60622ba6bf633c2  src/dv-coop/net/Npc.gd
 d5b650e029fc945c0b0c0026e8eae9630884040f3ecc47b20c0b86d842377fc1  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
