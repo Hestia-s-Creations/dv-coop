@@ -60,6 +60,7 @@ var mergeSince = 0.0
 var adverts = {}               # authority id -> {cid, n, born, at}: cells other machines run
 var resigned = {}              # id -> cid it resigned; its late packets for that cid are ignored
 var lastWinner = 0
+var ghost = null               # member: {n, born, until} of our cell after its authority died, held by the heir
 var adAccum = 0.0
 
 var edges = {}                 # "a:b" (a < b) -> linked, for hysteresis
@@ -150,6 +151,7 @@ func _physics_process(delta):
 
 	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
 		lost[auth] = now
+		_setGhost(now)
 		_log("authority %s silent %.1f s, treating as gone" % [auth, now - heardAt.get(auth, now)])
 		viewAccum = 1.0
 
@@ -312,6 +314,7 @@ func _promote(comp):
 	_setSpawner(true)
 	_log("PROMOTED to authority of %s (was %s), view=%s gen=%d" % [cid, old, comp, originGen])
 	mergeTo = 0
+	ghost = null
 	emit_signal("authority_changed", net.myId)
 	if comp.size() > 1:
 		_sendState()
@@ -337,6 +340,7 @@ func _leave(why, to = 0):
 	confirmed = {}
 	orphanSince = -1.0
 	mergeTo = 0
+	ghost = null
 	_setSpawner(true)
 	emit_signal("cell_left")
 
@@ -349,6 +353,7 @@ func _join(from, msg):
 	born = msg.get("born", 0)
 	orphanSince = -1.0
 	mergeTo = 0
+	ghost = null
 	_adopt(msg.off)
 	_setSpawner(false)
 	_log("JOINED cell %s, authority %s, members=%s gen=%d" % [cid, auth, cellMembers, originGen])
@@ -412,8 +417,27 @@ func _sendAd():
 	adAccum = 0.0
 	net.sendTo(net.peers.keys(), {"t": "c.ad", "cid": cid, "n": members().size(), "born": born}, false)
 
+# Our authority died: until the heir advertises, the cell's last advert stands for the heir (lowest surviving
+# member), so a solo player in range can't take the cell over during the handoff.
+func _setGhost(now):
+	var ad = adverts.get(auth)
+	ghost = {
+		"n": ad.n if ad != null else cellMembers.size(),
+		"born": ad.born if ad != null else born,
+		"until": now + MERGE_WAIT,
+	}
+
+func _heir():
+	var h = -1
+	for id in cellMembers:
+		if id != auth and not lost.has(id) and (id == net.myId or net.peers.has(id)) and (h < 0 or id < h):
+			h = id
+	return h
+
 # Size and age of the cell a player runs, {n, born}, or null if it runs none.
 func _cellInfo(id, now):
+	if ghost != null and role == Role.MEMBER and now < ghost.until and id == _heir():
+		return ghost
 	if id == net.myId:
 		if role == Role.AUTHORITY:
 			return {"n": members().size(), "born": born}
@@ -464,14 +488,15 @@ func _onJoin(from, msg):
 func _onLeave(from, msg):
 	if role == Role.MEMBER and from == auth and msg.get("cid") == cid:
 		resigned[from] = cid
-		adverts.erase(from)
 		var to = msg.get("to", 0)
 		if to != 0:
 			mergeTo = to
 			mergeSince = _now()
+			adverts.erase(from)
 			_log("authority %s resigned to %s's cell, waiting for its c.state" % [from, to])
 		else:
 			lost[auth] = _now() + RESIGN_GRACE
+			_setGhost(_now())
 			_log("authority %s resigned" % from)
 		viewAccum = 1.0
 		return
@@ -520,6 +545,7 @@ func _onState(from, msg):
 		if from != auth:
 			var old = auth
 			auth = from
+			ghost = null
 			_log("authority %s -> %s in cell %s" % [old, from, cid])
 			if msg.off != off or msg.gen != originGen:
 				originGen = msg.gen
