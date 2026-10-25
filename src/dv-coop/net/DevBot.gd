@@ -261,6 +261,7 @@ func _shootTick():
 				ship.reset_physics_interpolation()
 			ship.linear_velocity = rock.linear_velocity
 			ship.angular_velocity = 0.0
+			w.fire(1.0)   # also directly: the stock laser tick runs before the ship's next reset (seen working in m4-gate5)
 			if now >= holdLogAt:
 				holdLogAt = now + 1.0
 				var to = rock.global_position - w.global_position
