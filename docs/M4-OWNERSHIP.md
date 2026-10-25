@@ -55,7 +55,7 @@ generation) tag.
 | `o.new` | owner → authority | yes | recipes minted by the owner (`"<owner>:<n>"` ids) | bodies a player created: fracture shards of a rock it owns |
 | `d.ev` | shooter → owner | yes | list of `[id, epoch, kind, amount, point (rock-local), delta]`, batched per physics tick | weapon damage to a body the shooter doesn't own |
 | `o.list` | member → new authority | yes | ids this member owns, with `epoch` and state | rebuild the ownership table after a handoff |
-| `b.new` | shooter → all members | yes | bullet / blob id, `p`, `v`, `lingeringImpulse`, shooter | every machine runs a ballistic copy; its damage counts only on the hit rock's owner |
+| `b.new` | shooter → all members | yes | `id`, `s` (scene, only `res://weapons/projectiles/*.tscn`), `p`, `r`, `v`, `li` (lingeringImpulse), `g`; the shooter is the sender | every machine runs a ballistic copy; its damage counts only on the hit rock's owner |
 | `s.die` | ship owner → all members | yes | ship (peer id), final `p r v w` | the owner's ship exploded; others play it and remove the puppet |
 
 The authority keeps streaming `r.u` for bodies it owns. A player-owned body is streamed by its owner with `o.u` to
