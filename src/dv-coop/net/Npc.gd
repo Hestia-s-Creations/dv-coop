@@ -167,6 +167,18 @@ func _physics_process(delta):
 		if counts.size() > 0:
 			_log("ships 5 s: %s, mirrors=%d npcs=%d pods=%d" % [counts, mirrors.size(), npcs.size(), pods.size()])
 		counts = {}
+		_saveWatch()
+
+# Dev evidence for "nothing written to the viewer's save": sizes of the per-ship save tables, logged when they change.
+var lastSave = ""
+func _saveWatch():
+	var st = CurrentGame.state
+	var w = "transponders=%d shipNames=%d dispositions=%d encounteredShips=%d story=%d" % [
+		st.get("transponders", {}).get("lookup", {}).size(), st.get("shipNames", {}).size(),
+		st.get("dispositions", {}).size(), st.get("encounteredShips", {}).size(), st.get("story", {}).size()]
+	if w != lastSave:
+		_log("save watch: %s" % w)
+		lastSave = w
 
 func _devStoryTick():
 	if not storyNpc or storyDone:
