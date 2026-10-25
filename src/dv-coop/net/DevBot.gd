@@ -42,6 +42,8 @@ var keepLast = false # claw: hold the last rock instead of releasing it
 var armFitted = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
+var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
+const MAX_ATTEMPTS = 10
 
 func _ready():
 	name = "DevBot"
@@ -264,6 +266,9 @@ func _clawTick():
 func _clawEnd(arm, result, now):
 	if result != "":
 		Debug.l("COOP: BOT claw trial=%d id=%s result=%s" % [trial, claw.id, result])
+		if keepLast and attempts < MAX_ATTEMPTS:
+			attempts += 1
+			trial -= 1   # hold mode needs a rock in the claw: try again with another rock
 	results.erase(claw.id)
 	arm.enabled = false
 	claw = {"state": "idle", "id": "", "until": now + CLAW_GAP, "result": ""}
