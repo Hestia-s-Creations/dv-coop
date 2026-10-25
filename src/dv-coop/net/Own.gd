@@ -449,6 +449,15 @@ func _on_o_chg(from, msg):
 		owners.erase(id)
 	else:
 		owners[id] = int(msg.owner)
+	if mine.has(id) and int(msg.owner) != net.myId:
+		# taken from us (the authority thought we were gone): back to a tracked copy, and whoever holds it lets go
+		var n = mine[id]
+		mine.erase(id)
+		reasons.erase(id)
+		if is_instance_valid(n):
+			_rs().track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
+		Debug.l("COOP: OWN %s revoked by the authority e=%d" % [id, e])
+		emit_signal("denied", id, "revoked")
 
 # ---------------------------------------------------------------- streams
 

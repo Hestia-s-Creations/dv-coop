@@ -21,7 +21,7 @@ f37222d0c9c1db633fa9e92d889a620e942814b4696ae40035e383cd43093aea  src/dv-coop/ex
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
 f48a0f7f1d2efa739fe3fb43f397a143331b544f7a65b197637edddd94f58159  src/dv-coop/net/DevBot.gd
-bb4ba015bdf88e7db820a44ba9c908cafa87bdc8dbc65f3423c0146eeed4f37a  src/dv-coop/net/Own.gd
+89f1ca83db509276072ac9c48ce897d5e86c5617b089b7217e63d89a3df1bd3e  src/dv-coop/net/Own.gd
 e5b09fe004e696fd70ec4e2663a4f527cd2be89978bcf76e3be43ca347c0fb9e  src/dv-coop/net/RockSync.gd
 f7503d6dd5cbd9cdc455be80b0c25a8a9667968793191e61d543ec2f4b384645  src/dv-coop/ui/FriendOverlay.gd
 ad0e441b1e47020abba6ed89b9206d82c40387142cc3325daed6dd151efc76f4  tools/build.py
