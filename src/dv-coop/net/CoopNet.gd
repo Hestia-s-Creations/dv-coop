@@ -32,7 +32,8 @@ const RANGE_PUPPET_DROP = 45000.0
 const BEACON_TIMEOUT = 6.0
 const GAME_SCENE = "res://Game.tscn"
 const DEV_DIVE_TARGET = Vector2(15000, 12345678)
-const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd"]
+# Child modules, in order. Missing files are skipped, so a module can land on its own branch first.
+const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd", "res://dv-coop/net/Own.gd", "res://dv-coop/net/DevBot.gd"]
 
 enum Transport { NONE, STEAM, ENET }
 
@@ -74,6 +75,8 @@ var handlers = {}
 
 func _ready():
 	for path in MODULES:
+		if not ResourceLoader.exists(path):
+			continue
 		var m = load(path).new()
 		m.net = self
 		add_child(m)
