@@ -552,6 +552,7 @@ func _spawnPuppet(id, game):
 	if claims > 0:
 		Debug.l("COOP: puppet for %s: %d drone/claim spawner(s) emptied" % [id, claims])
 	ship.netControlled = true
+	ship.set_meta("dvnet_puppet", id)   # the spawner and RockSync must never free a puppet; only _despawnPuppet does
 	ship.ai = false
 	ship.playerControlled = false
 	ship.autopilot = false
