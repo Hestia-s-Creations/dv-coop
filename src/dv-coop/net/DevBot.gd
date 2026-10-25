@@ -255,6 +255,9 @@ func _clawTick():
 			elif now > claw.until:
 				_clawEnd(arm, "nolock" if not arm.locked else "nolock:locked-no-answer", now)
 		"hold":
+			if keepLast and trial >= trials and not _own().mine.has(claw.id) and not arm.locked:
+				_clawEnd(arm, "lost", now)   # the arm let go (or ownership was revoked): hold mode tries again
+				return
 			if now >= holdLogAt:
 				holdLogAt = now + 1.0
 				var rock = _rs().nodeOf(claw.id)
