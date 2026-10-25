@@ -258,13 +258,14 @@ func _on_o_u(from, msg):
 	if not (l is Array):
 		return
 	var rs = _rs()
+	var at = rs.localSampleMs(from, msg.get("ts", -1))
 	for it in l:
 		if not (it is Array) or it.size() != 6:
 			continue
 		var id = str(it[0])
 		if ownerOf(id) != from or int(it[1]) != epochOf(id):
 			continue
-		rs.updateTracked(id, it[2], float(it[3]), it[4], float(it[5]))
+		rs.updateTracked(id, it[2], float(it[3]), it[4], float(it[5]), at)
 
 # Positions of the rocks this member owns, to everyone else in the cell. (Angular velocity rides in r as rot only;
 # the tracked copy's angular velocity is corrected toward 0 extra spin, which is fine at 20 Hz.)
@@ -281,7 +282,7 @@ func _stream():
 	if l.empty():
 		return
 	var c = _cell()
-	var msg = {"t": "o.u", "l": l}
+	var msg = {"t": "o.u", "ts": OS.get_system_time_msecs(), "l": l}
 	for p in c.members():
 		if p != net.myId:
 			net.send(p, msg, false)
