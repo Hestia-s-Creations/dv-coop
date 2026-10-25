@@ -81,6 +81,7 @@ func promoteToAuthority():
 		if not is_instance_valid(node):
 			continue
 		node.remove_meta("dvnet_tracked")
+		rocks[id] = node   # streamable from here on, under the same id the members already know
 		# tracked rocks were never counted in this machine's density map; count them so the stock despawn balances
 		var oc = node.get("asteroidClass")
 		if field != null and oc != null and oc >= 0 and oc < 5:
