@@ -28,6 +28,12 @@ extends Node
 #      --coop-dev-story-npc    while I'm solo after my dive, spawn two NPC TRTLs beside me, one marked essential (a
 #                              story NPC), one plain; once I've joined a cell, bring the kept one next to me (gate 9
 #                              sub-check: the plain one is freed on joining, the essential one is kept and seen).
+#      --coop-dev-kill-npc=<s> as authority, s seconds after the dev pirate spawned, blow it up with a lifepod set
+#                              (audit site: an NPC's lifepod exists once, on the machine running the NPC).
+#      --coop-dev-poi=<event>  while solo after my dive, put a non-ephemeral test POI with that ring event (e.g.
+#                              Addlet, a moonlet) 30 km ahead of me, so my spawner makes the oddity (gate 9c).
+#      --coop-dev-return=<s>   s seconds after joining a cell, jump back to where I placed the test POI, which takes
+#                              me out of the cell, so the freed oddity must come back from its POI (gate 9c).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -54,8 +60,16 @@ var hits = {}       # member: owner -> [entries] forwarded this tick
 var pirateAfter = -1.0
 var pirateClock = 0.0
 var pirateDone = false
+var devPirate = null
+var killAfter = -1.0
+var killClock = 0.0
 var shootAfter = -1.0
 var shootClock = 0.0
+var poiEvent = ""
+var poiAt = null
+var returnAfter = -1.0
+var returnClock = 0.0
+var returned = false
 var storyNpc = false
 var storyDone = false
 var storyKept = null
@@ -84,6 +98,12 @@ func _ready():
 			pirateAfter = float(arg.substr(18))
 		elif arg.begins_with("--coop-dev-shoot="):
 			shootAfter = float(arg.substr(17))
+		elif arg.begins_with("--coop-dev-kill-npc="):
+			killAfter = float(arg.substr(20))
+		elif arg.begins_with("--coop-dev-poi="):
+			poiEvent = arg.substr(15)
+		elif arg.begins_with("--coop-dev-return="):
+			returnAfter = float(arg.substr(18))
 		elif arg == "--coop-dev-story-npc":
 			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
@@ -131,6 +151,55 @@ func _onCellJoined(authority_id):
 			freed.append(c.transponder)
 			field.kill(c)
 	_log("joined %s's cell: freed %d NPCs of mine %s, kept %d as mine %s" % [authority_id, freed.size(), freed, kept.size(), kept])
+	_freeOddities(field, me)
+
+# The oddities my spawner placed while I was solo (moonlets, habitats, stations, storm beacons, wrecks, loot) are
+# nobody else's world, so they go too, quietly (field.kill: no vanish, no setStory, no POI change). A non-ephemeral POI
+# stays in my save and brings its oddity back when I'm solo near it again. Kept: anything held, in a cargo hold, or
+# docked; anything essential or mid-dialog; and anything mid-event whose completion the save would record (a pirate
+# station whose reactors have started to fry: BigExplosion sets its story flag when it blows).
+func _freeOddities(field, me):
+	var freed = []
+	var kept = []
+	for c in field.get_children():
+		if not (c is RigidBody2D) or c == me or _isNpc(c) or "selfRemove" in c:
+			continue
+		if c.has_meta("dvnet_puppet") or c.has_meta("dvnet_mirror") or c.has_meta("dvnet_tracked"):
+			continue
+		var rs = net.get_node_or_null("RockSync")
+		if rs != null and rs.isRock(c):
+			continue   # RockSync frees my rocks
+		var tag = "%s/%s" % [c.filename.get_file().get_basename() if c.filename else c.name, c.get("transponder") if c.get("transponder") else c.name]
+		var why = _keepOddity(c, me)
+		if why != "":
+			kept.append("%s: %s" % [tag, why])
+		else:
+			freed.append(tag)
+			field.kill(c)
+	_log("joined: freed %d oddities of mine %s, kept %d %s" % [freed.size(), freed, kept.size(), kept])
+
+func _keepOddity(c, me) -> String:
+	if me != null and is_instance_valid(me) and (me.temporaryCargo.has(c) or me.cargo.has(c) or c.get("docked") == me):
+		return "held"
+	var hold = c.get("inCargoHold")
+	if hold != null and hold:
+		return "in a hold"
+	if c.get("essential") == true:
+		return "essential"
+	if c.get("talkingWith") != null:
+		return "mid-dialog"
+	var stack = [c]
+	while stack.size() > 0:
+		var n = stack.pop_back()
+		if "explodeNow" in n and "reactors" in n:
+			if n.explodeNow:
+				return "mid-event"
+			for rr in n.reactors:
+				if is_instance_valid(rr) and rr.get("fried"):
+					return "mid-event"
+		for k in n.get_children():
+			stack.append(k)
+	return ""
 
 func _log(s):
 	Debug.l("COOP: NPC " + s)
@@ -186,6 +255,8 @@ func _physics_process(delta):
 	_devShootTick(delta)
 	_devFireTick(delta)
 	_devStoryTick()
+	_devKillTick(delta)
+	_devPoiTick(delta)
 	devStep = 5
 	if trace:
 		_log("dev trace: reached step %d" % devStep)
@@ -241,6 +312,32 @@ func _devStoryTick():
 			storyKept = npc
 		var ok = field.spawnByBlueprint(npc, ship.global_position + Vector2(0, 1500 if essential else -1500), 0, 300)
 		_log("dev: %s NPC %s '%s' spawned beside me before joining: %s" % ["essential" if essential else "plain", npc.transponder, npc.getShipName(), ok])
+
+func _devPoiTick(delta):
+	if poiEvent == "":
+		return
+	var cell = _cell()
+	var ship = net.localShip
+	if cell == null or ship == null or not is_instance_valid(ship) or ship.cutscene or not ship.get("setup"):
+		return
+	if poiAt == null:
+		if cell.inCell():
+			return
+		poiAt = CurrentGame.globalCoords(ship.global_position)
+		var ahead = ship.linear_velocity.normalized() if ship.linear_velocity.length() > 1.0 else Vector2(1, 0)
+		CurrentGame.createOrUpdatePoi("dvcoop-test-" + poiEvent, poiEvent, 3.0, ahead, "poi", 24 * 3600, false)
+		var d = CurrentGame.state.astrogation.get("dvcoop-test-" + poiEvent, {})
+		_log("dev: test POI %s (event %s) at %s, placed from %s" % ["dvcoop-test-" + poiEvent, poiEvent, d.get("vector"), poiAt])
+		return
+	if returnAfter < 0 or returned or not cell.inCell() or cell.isAuthority():
+		return
+	returnClock += delta
+	if returnClock < returnAfter:
+		return
+	returned = true
+	ship.teleportBy(CurrentGame.localCoords(poiAt) - ship.global_position)
+	ship.reset_physics_interpolation()
+	_log("dev: returned to %s, near the test POI, to leave the cell" % [poiAt])
 
 func count(what, n):
 	counts[what] = counts.get(what, 0) + n
@@ -569,6 +666,24 @@ func _devPirateTick(delta):
 	pirate.preheat = true
 	var ok = field.spawnByBlueprint(pirate, CurrentGame.localCoords(at) + Vector2(2500, 0), 0, 500)
 	_log("dev: pirate %s '%s' spawned 2,500 px from %s: %s" % [pirate.transponder, pirate.getShipName(), target, ok])
+	devPirate = pirate
+
+func _devKillTick(delta):
+	if killAfter < 0 or devPirate == null:
+		return
+	if not is_instance_valid(devPirate) or devPirate.get("dead"):
+		devPirate = null
+		return
+	killClock += delta
+	if killClock < killAfter:
+		return
+	devPirate.lifepod = load("res://ships/Lifepod.tscn")
+	for c in devPirate.get_children():
+		if c.has_method("initExplosion"):
+			_log("dev: blowing up NPC %s %s (lifepod set)" % [devPirate.get_meta("dvnet_npc") if devPirate.has_meta("dvnet_npc") else "-", devPirate.transponder])
+			c.initExplosion()
+			break
+	devPirate = null
 
 func _devShootTick(delta):
 	if shootAfter < 0:
