@@ -38,6 +38,14 @@ var role = "solo"     # mirrors RockSync's role
 var lastAuth = -1     # member: the authority we last reported our rocks to (o.list)
 var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
 var told = {}         # authority: members we've sent the ownership table to
+# gate evidence (5 s lines): beam damage forwarded / applied, bullet contacts applied / suppressed, per rock id
+var dmgStats = {}     # id -> {fwd_n, fwd_e, app_n, app_e, bul_app, bul_fx}
+var dmgLogAccum = 0.0
+
+func stat(id, key, amount = 1.0):
+	if not dmgStats.has(id):
+		dmgStats[id] = {}
+	dmgStats[id][key] = dmgStats[id].get(key, 0.0) + amount
 
 # conservation (authority): every rock that entered and left this field, by reason
 var cons = {"born": 0, "gone": 0, "gone_by": {}, "eaten": {}}
@@ -507,6 +515,8 @@ func forwardDamage(node, kind, amount, point, delta):
 	if to == net.myId:
 		return
 	var local = node.global_transform.affine_inverse().xform(point) if point is Vector2 else Vector2()
+	stat(id, "fwd_n")
+	stat(id, "fwd_e", float(amount))
 	if not dmgQueue.has(to):
 		dmgQueue[to] = []
 	dmgQueue[to].append([id, epochOf(id), kind, float(amount), local, float(delta) if delta != null else 0.0])
@@ -531,6 +541,8 @@ func _on_d_ev(from, msg):
 		var node = rs.nodeOf(id)
 		if node == null:
 			continue
+		stat(id, "app_n")
+		stat(id, "app_e", float(it[3]))
 		var point = node.global_transform.xform(it[4])
 		var d = it[5] if it[5] > 0 else null
 		match str(it[2]):
@@ -540,6 +552,17 @@ func _on_d_ev(from, msg):
 				node.applyKineticDamage(it[3], point, d)
 			"m":
 				node.applyEmpDamage(it[3], point, d if d != null else 1.0 / 60.0)
+
+func _logDamage():
+	var rs = _rs()
+	for id in dmgStats:
+		var st = dmgStats[id]
+		var n = rs.nodeOf(id)
+		var te = n.get("totalEnergy") if n != null and n.get("totalEnergy") != null else -1.0
+		Debug.l("COOP: OWN dmg %s owner=%s here=%s fwd=%d/%.0f applied=%d/%.0f bullet applied=%d fx=%d totalEnergy=%.1f" % [
+			id, ownerOf(id), "owned" if ownsHere(id) else "copy", st.get("fwd_n", 0), st.get("fwd_e", 0), st.get("app_n", 0),
+			st.get("app_e", 0), st.get("bul_app", 0), st.get("bul_fx", 0), te])
+	dmgStats.clear()
 
 # ---------------------------------------------------------------- tick
 
@@ -565,6 +588,10 @@ func _physics_process(delta):
 		streamAccum = 0.0
 		_stream()
 	_flushDamage()
+	dmgLogAccum += delta
+	if dmgLogAccum >= 5.0:
+		dmgLogAccum = 0.0
+		_logDamage()
 	if role == "member":
 		_reportOwned()
 		_sendBorn()

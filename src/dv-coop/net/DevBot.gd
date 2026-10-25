@@ -16,7 +16,10 @@ extends Node
 #                         release (arm off). Lines: COOP: BOT claw trial=i id=... result=granted|denied:<why>|nolock
 #                         and, while held, "COOP: BOT claw holding id=... at x,y" every second (for gates 3 and 4).
 #                         --coop-bot=claw,N,hold keeps the last rock in the claw instead of releasing it.
-# More modes (laser, massdriver) follow the same pattern.
+#   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
+#                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
+#                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
+#                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
 
 const RACE_EVERY = 3.0      # s between trials
 const RACE_LEAD = 0.6       # s between bot.go and the claim instant
@@ -26,6 +29,9 @@ const CLAW_WAIT = 6.0       # s for the arm to lock and the claim to resolve
 const CLAW_HOLD = 3.0       # s a claw trial holds its rock
 const CLAW_GAP = 2.0        # s between claw trials
 const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
+const SHOOT_TIME = 3.0
+const SHOOT_GAP = 3.0
+const SHOOT_DIST = {"laser": 600.0, "massdriver": 900.0}
 
 var net = null   # CoopNet
 
@@ -42,6 +48,8 @@ var keepLast = false # claw: hold the last rock instead of releasing it
 var armFitted = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
+var shoot = {"state": "idle", "id": "", "until": 0.0}
+var noWeaponLogged = false
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
@@ -84,6 +92,9 @@ func _secs() -> float:
 func _physics_process(delta):
 	if mode == "claw":
 		_clawTick()
+		return
+	if mode == "laser" or mode == "massdriver":
+		_shootTick()
 		return
 	if mode != "race":
 		return
@@ -176,6 +187,81 @@ func _member(now):
 			var node = _rs().nodeOf(id)
 			if node != null:
 				_own().untouch(node, "bot")
+
+# ---------------------------------------------------------------- laser / mass driver
+
+func _findWeapon(n):
+	for c in n.get_children():
+		if c.has_method("fire"):
+			if mode == "laser" and c.get("pulsesPerSecond") != null and c.get("ray") != null:
+				return c
+			if mode == "massdriver" and c.get("ammoWeight") != null and c.get("bullet") != null:
+				return c
+		var r = _findWeapon(c)
+		if r != null:
+			return r
+	return null
+
+func _shootTick():
+	var c = _cell()
+	if c == null or not c.inCell() or c.isAuthority():
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	var ship = net.localShip
+	if ship == null or not is_instance_valid(ship) or ship.get("cutscene") == true or now - inCellSince < SETTLE:
+		return
+	var w = _findWeapon(ship)
+	if w == null:
+		if not noWeaponLogged:
+			noWeaponLogged = true
+			Debug.l("COOP: BOT %s: no %s on this ship, idle" % [mode, mode])
+		return
+	match shoot.state:
+		"idle":
+			if trial >= trials or now < shoot.until:
+				return
+			var id = _pickTarget()
+			if id == "":
+				return
+			trial += 1
+			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME}
+			Debug.l("COOP: BOT %s trial=%d id=%s firing" % [mode, trial, id])
+		"fire":
+			var rock = _rs().nodeOf(shoot.id)
+			if rock == null or now >= shoot.until:
+				Debug.l("COOP: BOT %s trial=%d id=%s done%s" % [mode, trial, shoot.id, "" if rock != null else " (rock gone)"])
+				shoot = {"state": "idle", "id": "", "until": now + SHOOT_GAP}
+				if trial >= trials:
+					Debug.l("COOP: BOT %s done, %d trials" % [mode, trials])
+				return
+			var dir = Vector2(0, -1).rotated(w.global_rotation)
+			var want = rock.global_position - dir * SHOOT_DIST[mode]
+			var off = want - w.global_position
+			if off.length() > 10.0:
+				ship.global_position += off
+				ship.reset_physics_interpolation()
+			ship.linear_velocity = rock.linear_velocity
+			ship.angular_velocity = 0.0
+			w.fire(1.0)
+
+# A rock the authority owns and streams, not held by anyone: the nearest one, preferring heavy rocks (they last).
+func _pickTarget() -> String:
+	var rs = _rs()
+	var ship = net.localShip
+	var best = ""
+	var bestD = 0.0
+	for id in rs.tracked:
+		var n = rs.tracked[id].n
+		if not is_instance_valid(n) or n.get("fracturing") == true or _own().owners.has(id) or n.mass < 300:
+			continue
+		var d = n.global_position.distance_to(ship.global_position)
+		if best == "" or d < bestD:
+			best = id
+			bestD = d
+	return best
 
 # ---------------------------------------------------------------- claw
 
