@@ -31,11 +31,12 @@ FORBIDDEN = [
     (r"\bJavaScript\b", "browser scripting"),
     (r"\bbytes2var\([^)]*,\s*true", "decoding objects from the network"),
     (r"\bExpression\.new\b", "evaluating code"),
-    # Not about reach: Godot 3 already runs these on every level of a script chain, so an explicit super call runs
-    # the game's code twice (it did, from M1 to M4, on every ship).
-    (r"(?<![\w.])\.(_init|_ready|_process|_physics_process|_enter_tree|_exit_tree|_input|_unhandled_input|_notification)\(",
-     "explicit super call of an engine callback (Godot 3 already calls every level)"),
 ]
+# Not about reach: Godot 3 already runs these callbacks on every level of a script chain, so calling the parent's
+# version from inside the same-named override runs the game's code twice (it did, from M1 to M4, on every ship).
+# Calling it from a differently named function (a tick driver with the node's own processing off) is allowed.
+ENGINE_CALLBACKS = {"_init", "_ready", "_process", "_physics_process", "_enter_tree", "_exit_tree", "_input",
+                    "_unhandled_input", "_notification"}
 # Things the mod is allowed to reach outside the game for. Each use is listed in the report.
 DECLARED = [
     (r"\bSteam\.\w+", "Steam lobby, invites and P2P packets"),
@@ -122,8 +123,14 @@ def main():
     print("3. What the mod reaches outside the game for")
     gd = {f: (ROOT / f).read_text(encoding="utf-8") for f in scripts if f.endswith(".gd")}
     for f, text in gd.items():
+        current = None
         for n, line in enumerate(text.splitlines(), 1):
             code = line.split("#", 1)[0]
+            m = re.match(r"\s*(static\s+)?func\s+(\w+)", code)
+            if m:
+                current = m.group(2)
+            if current in ENGINE_CALLBACKS and re.search(r"(?<![\w.])\.%s\(" % current, code):
+                fails.append(f"super call of {current} inside its own override (Godot 3 already calls every level): {f}:{n}: {line.strip()}")
             for pat, why in FORBIDDEN:
                 if re.search(pat, code):
                     fails.append(f"forbidden call ({why}): {f}:{n}: {line.strip()}")
