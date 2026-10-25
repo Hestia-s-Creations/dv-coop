@@ -44,6 +44,7 @@ var nearAccum = 0.0
 var farAccum = 0.0
 var interestAccum = 0.0
 var logAccum = 0.0
+var screenDump = false     # dev: DVCOOP_RS_SCREEN=1 also logs the camera transform and every rock on screen
 var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
 var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
@@ -56,6 +57,7 @@ func _ready():
 	if sample != "" and float(sample) > 0:
 		logEvery = max(0.2, float(sample))
 		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
+	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
@@ -603,3 +605,22 @@ func _logState():
 		line += " | near[me]=%s" % PoolStringArray(_nearest(tracked, net.localShip.global_position, 3)).join(" ")
 	Debug.l(line)
 	sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
+	if screenDump and role != "solo":
+		_logScreen()
+
+# Screen position of every rock in view, for matching screenshots between machines: screen = ct * local position.
+func _logScreen():
+	var vp = get_viewport()
+	var ct = vp.canvas_transform
+	var size = vp.size
+	var out = []
+	for pool in [rocks, tracked]:
+		for id in pool:
+			var node = pool[id] if not (pool[id] is Dictionary) else pool[id].n
+			if not is_instance_valid(node):
+				continue
+			var sp = ct.xform(node.global_position)
+			if sp.x >= 0 and sp.y >= 0 and sp.x < size.x and sp.y < size.y:
+				var g = CurrentGame.globalCoords(node.global_position)
+				out.append("%s@%.0f,%.0f>%.0f,%.0f" % [id, g.x, g.y, sp.x, sp.y])
+	Debug.l("COOP: RS screen ms=%d vp=%.0fx%.0f n=%d %s" % [OS.get_system_time_msecs(), size.x, size.y, out.size(), PoolStringArray(out).join(" ")])
