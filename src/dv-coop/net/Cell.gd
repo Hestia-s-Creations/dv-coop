@@ -25,7 +25,7 @@ const RANGE_LEAVE = 45000.0
 const VIEW_HZ = 10.0
 const STATE_EVERY = 2.0
 const HB_HZ = 5.0
-const AUTH_SILENT = 0.9        # member: authority quiet this long -> treated as gone, next-lowest takes over
+const AUTH_SILENT = 1.5        # member: authority quiet this long (crash) -> gone, next-lowest takes over
 const ORPHAN_WAIT = 2.0        # member: authority out of my view and nobody claimed the cell -> leave
 const BEACON_EXTRAP_MAX = 2.0
 const SLIP_MARGIN = 150000.0   # authority slipstreams early once any member gets this close to the radius
@@ -48,7 +48,7 @@ var cellSeq = 0
 
 var edges = {}                 # "a:b" (a < b) -> linked, for hysteresis
 var lastComp = []
-var lost = {}                  # id -> true: authority went silent; out of the graph until heard again
+var lost = {}                  # id -> s: authority resigned or went silent; out of the graph until heard again
 var heardAt = {}               # id -> s, last c.* packet from it
 var orphanSince = -1.0
 
@@ -127,7 +127,7 @@ func _physics_process(delta):
 	var now = _now()
 
 	if role == Role.MEMBER and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
-		lost[auth] = true
+		lost[auth] = now
 		_log("authority %s silent %.1f s, treating as gone" % [auth, now - heardAt.get(auth, now)])
 		viewAccum = 1.0
 
@@ -159,9 +159,11 @@ func _physics_process(delta):
 
 # Global position of a player for cell purposes, or null if it isn't in the rings / is stale / lost.
 func _peerPos(id, now):
-	if lost.has(id):
-		return null
 	var pr = net.peers[id]
+	if lost.has(id):
+		if pr.beaconAt <= lost[id]:
+			return null
+		lost.erase(id)   # a fresh beacon: it's alive (resigned to join a lower id, or hitched)
 	var b = pr.beacon
 	if b == null or now - pr.beaconAt > PEER_STALE or b.get("zone") != "rings" or not b.has("p"):
 		return null
@@ -271,8 +273,12 @@ func _promote(comp):
 	role = Role.AUTHORITY
 	auth = net.myId
 	off = CurrentGame.globalOffset
-	cellMembers = comp
+	# the others already sit on this origin with the same rocks: keep them in members() (no re-snap)
 	confirmed = {}
+	for id in comp:
+		if id != net.myId and cellMembers.has(id):
+			confirmed[id] = true
+	cellMembers = comp
 	_setSpawner(true)
 	_log("PROMOTED to authority of %s (was %s), view=%s gen=%d" % [cid, old, comp, originGen])
 	emit_signal("authority_changed", net.myId)
@@ -286,8 +292,8 @@ func _leave(why):
 		if not lost.has(auth) and net.peers.has(auth):
 			net.send(auth, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
 	else:
-		# tell my members they're out; anyone still in range of a lower id gets that one's c.state
-		net.sendTo(cellMembers, {"t": "c.state", "cid": cid, "auth": net.myId, "members": [net.myId], "off": off, "gen": originGen}, true)
+		# resign: members drop me as authority at once and the next-lowest promotes, keeping the cell's rocks
+		net.sendTo(cellMembers, {"t": "c.leave", "cid": cid, "gen": originGen}, true)
 	_log("LEFT cell %s as %s (%s)" % [cid, Role.keys()[role], why])
 	role = Role.SOLO
 	auth = net.myId
@@ -371,6 +377,11 @@ func _onJoin(from, msg):
 		_log("member %s confirmed, members=%s" % [from, members()])
 
 func _onLeave(from, msg):
+	if role == Role.MEMBER and from == auth and msg.get("cid") == cid:
+		lost[auth] = _now()
+		_log("authority %s resigned" % from)
+		viewAccum = 1.0
+		return
 	_heard(from)
 	if confirmed.has(from):
 		confirmed.erase(from)
