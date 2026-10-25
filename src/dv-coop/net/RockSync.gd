@@ -45,6 +45,7 @@ var farAccum = 0.0
 var interestAccum = 0.0
 var logAccum = 0.0
 var screenDump = false     # dev: DVCOOP_RS_SCREEN=1 also logs the camera transform and every rock on screen
+var mineralLog = 0         # dev: DVCOOP_RS_MINERALS=1 logs the first few minerals sent (authority) / built (member)
 var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
 var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
@@ -58,6 +59,7 @@ func _ready():
 		logEvery = max(0.2, float(sample))
 		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
 	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
+	mineralLog = 5 if OS.get_environment("DVCOOP_RS_MINERALS") == "1" else 0
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
@@ -199,6 +201,8 @@ func _onChildExiting(node):
 func _recipe(id, n) -> Array:
 	var kind = n.filename.substr(ROCK_PREFIX.length()).trim_suffix(".tscn")
 	var mineral = n.get("mineralContent") != null
+	if mineral:
+		_logMineral("sent", id, n)
 	return [id, kind, 1.0 if mineral else n.additionalScale, n.global_position, n.global_rotation,
 		n.linear_velocity, n.angular_velocity, n.asteroidClass, n.mineralContent if mineral else n.rnd,
 		n.estimatedRadius, 0 if mineral else n.splitsTo]
@@ -231,9 +235,17 @@ func _build(rc):
 	n.angular_velocity = rc[6]
 	if mineral:
 		_setMineralContent(n, rc[8])
+		_logMineral("built", id, n)
 	else:
 		n.rnd = rc[8]
 	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": OS.get_ticks_msec()}
+
+var mineralsLogged = {}
+func _logMineral(what, id, n):
+	if mineralLog <= 0 or mineralsLogged.has(id) or mineralsLogged.size() >= mineralLog:
+		return
+	mineralsLogged[id] = true
+	Debug.l("COOP: RS mineral %s %s %s content=%.6f mass=%.4f composition=%s" % [what, id, n.filename.get_file(), n.mineralContent, n.mass, n.composition])
 
 # mineral._ready() rolls its own content and scales by it; redo that with the authority's roll.
 func _setMineralContent(n, k):
