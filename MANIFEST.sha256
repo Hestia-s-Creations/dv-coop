@@ -1,5 +1,5 @@
 # Every file in this repo and its SHA-256 (CRLF read as LF). Checked by tools/verify.py.
-c28db8baf0cfc34d9ac05c7ee5233eb85b71ac286b3a7542b7cba23a941a0ce1  .gitattributes
+8d45bb90a6ac839f6b8b870d874b5526816d588959787a8b06c46b44b885304c  .gitattributes
 ac8a335d8485582c8f2561f472222da4211a44ea60020c9c26ee756b3fa0214f  .gitignore
 f7c399da4b15eb8374e193c2bbe18de679b5ae82083cb9ed9e741feba9d1dd4f  LICENSE
 d6bac1a9384b9ab71d7b3afe929a4ddde982c7749efee30e268ec0145e6511b6  README.md
@@ -19,12 +19,12 @@ ac3fcd85ffff3165a41b70205da626146552b7d653bdb5f70664461bd46ecfb8  src/dv-coop/ex
 f19433ac1e2eb5347c3dd1686c4a7d59746834501ed1df990dd474433826c356  src/dv-coop/ext/drone-plant.gd
 391a08f91dac4a1cb582e8c5345d94d9cb2681775257a20072a5f42cd47d706c  src/dv-coop/ext/emp.gd
 be4e2840bea26662ca944ba1e31d20286d011f4092f54f3e419dc00360ff1eae  src/dv-coop/ext/laser.gd
-545ebc98a604f60d40471c1eb3262ae5c589bc3c05362726940ff39be23c719a  src/dv-coop/ext/ship-ctrl.gd
+02a80d6319e2e42835d281908384d4e6a80193be30012f18f6b050d2e08d95f5  src/dv-coop/ext/ship-ctrl.gd
 cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ext/synchrotron.gd
 6597e25d07e2eb16f9bcf3eef038f6fd5f47ea95290e7a3770f5561e93552c63  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
-6b0f877be1f8eaf6afbceaab5914756100bbf91107ba7e846a37e22d1a140df0  src/dv-coop/net/Npc.gd
+a5781d55ba2df9dc13d1dd9dec3c73e28715aa802c21eaf83a2163558d4a1d20  src/dv-coop/net/Npc.gd
 d5b650e029fc945c0b0c0026e8eae9630884040f3ecc47b20c0b86d842377fc1  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
 f7503d6dd5cbd9cdc455be80b0c25a8a9667968793191e61d543ec2f4b384645  src/dv-coop/ui/FriendOverlay.gd
@@ -36,4 +36,4 @@ ce8767fbf7a12d74af8453aa21f06cdd074cce7f4280b7356627ccdab263d98e  tools/sandbox.
 5121c638d7fcc1525ce0898e9ad8341d07caa3ff04429a7ebc5f3f452d9dc393  tools/setres.py
 225f6aeb579dfd7eecf661eb39f7ab6a3d3f6388b1617baaf7d7f03607a4267a  tools/spec_pdf.py
 e73e6d6894ec1d736dd69efc1c1e9e8b2bf76cc934197b43dfd545f3e3284c8a  tools/stop.sh
-f69cf6daf0a140ffcece2ab8fea443b04f9347f26275a6fac5ea8e4f27ebab01  tools/verify.py
+dd8a0cad1344e6cf4e62cd34218b2e13966afb2eb224f8cc18d8e836e39f2d3c  tools/verify.py

@@ -33,6 +33,9 @@ export var netSnapAngle = 0.6
 export var netCorrectionGain = 4.0
 export var netMaxExtrapolation = 0.25
 
+# Godot 3 calls _ready, _process and _physics_process on every level of a script chain by itself (base first
+# for _ready, derived first for _process). Never call them with a leading dot here: until 2026-10-25 this file
+# did, and stock ship-ctrl ran its _ready and _process twice per frame on every ship (measured: 2.0 -> 1.0 runs).
 func _ready():
 	Debug.l("COOP: ship-ctrl extension active on '%s' (playerControlled=%s ai=%s net=%s)" % [name, playerControlled, ai, netControlled])
 
