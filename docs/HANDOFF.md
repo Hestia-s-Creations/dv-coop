@@ -1,8 +1,7 @@
 # dv-coop handoff (written 2026-10-10, for continuing on Linux)
 
 Everything a fresh session needs to pick this up without re-deriving it. The spec is in `SPEC.md`
-next to this file (exported from the live Claude Doc; the three diagrams are text placeholders there)
-and the live, editable version is https://claude.ai/code/artifact/ab50c617-6d3a-4a2a-922a-e30e64023af3.
+next to this file (PDF copy: `SPEC.pdf`). These are the author's working notes; paths below are on the author's machines.
 
 ## Where things are
 

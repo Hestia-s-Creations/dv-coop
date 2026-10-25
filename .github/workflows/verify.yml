@@ -1,0 +1,15 @@
+# Runs tools/verify.py on every push and pull request, so the badge on the README shows whether the repo
+# still holds exactly what MANIFEST.sha256 lists, with no game files and no undeclared outside access.
+name: verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -I tools/verify.py

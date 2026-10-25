@@ -1,6 +1,8 @@
 # ΔV Co-op Mod Spec
 
-As of 2026-10-10 · Tim · exported from the live Claude Doc (diagrams are placeholders there): https://claude.ai/code/artifact/ab50c617-6d3a-4a2a-922a-e30e64023af3
+Design spec, v2 · written 2026-10-09, status notes as of 2026-10-10. A PDF copy of this file is [SPEC.pdf](SPEC.pdf).
+
+This is a design document: it describes what the mod is meant to become. For what actually works today, see the Status section of the [README](../README.md).
 
 ## Scope
 
@@ -75,7 +77,6 @@ Every fork is decided with a default so building can continue. The two that defi
 
 ## Architecture
 
-&#91;embedded content: co-op topology · local bubbles, one shared cell, a beacon bus\]
 
 Every machine runs the unmodified game plus one `CoopNet` node, and when alone it is exactly the stock game. The only always-on traffic is a one-per-second beacon from each player to every other. When two or more players come within range they form a cell: the member with the lowest id keeps simulating, the others suspend their own spawner and track the authority's bodies, and the pair exchange ship intent and state as proven in M1. Players outside every cell cost nothing and see each other only as map markers.
 
@@ -122,7 +123,6 @@ Two rules. Outside a cell, nothing is replicated but beacons. Inside a cell, eve
 
 ## Session flow
 
-&#91;embedded content: cell lifecycle · join, play alone, meet, mine, drift apart\]
 
 There is no shared "dive". Each player starts and ends dives on their own schedule; the lobby only carries beacons until two players come within range. A cell forms and dissolves from distance alone, with 5,000 px of hysteresis so a pair flying at the edge does not flap. Joining is either a dive from Enceladus targeted at a friend's beacon, or a course plotted to a friend from the ring; both put the joiner in range and the cell does the rest.
 
@@ -169,11 +169,10 @@ It takes about five seconds and produces an editable Godot 3.6 project. The mod 
 
 ## Work plan
 
-&#91;embedded content: roadmap · 7 milestones by week, 2 done\]
 
 Each diamond is a gate: the next milestone does not start until the criterion under it has been seen on two or more machines. M3 and M4 are the long poles. M2 reuses M1 wholesale and mostly adds the mesh and the map. Weeks assume one person working most evenings and weekends; M0 and M1 both landed in one day, so the estimates are conservative.
 
-**Status, 2026-10-09: M0 and M1 done.** M0 passed: the mod loads through the official loader, the ship-controller extension is live on real ships, a Steam lobby is created from a direct exe launch, and packets flow between two instances at about 16 ms round trip. M1 works on the two-instance ENet loop: both machines auto-enter one dive, exchange ship configs, spawn a puppet of each other's ship, and agree on separation to within 2 px at about 10 kB/s each way. Open: ten minutes of hand-flown formation, and a Steam P2P packet between two different Steam accounts. Code lives in `C:\Users\Tim\dv-coop`.
+**Status, 2026-10-09: M0 and M1 done.** M0 passed: the mod loads through the official loader, the ship-controller extension is live on real ships, a Steam lobby is created from a direct exe launch, and packets flow between two instances at about 16 ms round trip. M1 works on the two-instance ENet loop: both machines auto-enter one dive, exchange ship configs, spawn a puppet of each other's ship, and agree on separation to within 2 px at about 10 kB/s each way. Open: ten minutes of hand-flown formation, and a Steam P2P packet between two different Steam accounts.
 
 **M2 status, 2026-10-09: mesh, beacons and markers working on three instances.** Peers are a dictionary rather than a host/guest pair, the ENet dev transport relays through the server, every peer beacons once a second, puppets appear under 40,000 px and drop past 45,000 px, and a friend-marker overlay draws a chevron, name and distance at the screen edge for every peer at any range. An out-of-range peer costs about 1 kB/s. The gate (three instances, markers at any distance) was confirmed by screen capture. Open: a hand-flown approach from out of range into range.
 
