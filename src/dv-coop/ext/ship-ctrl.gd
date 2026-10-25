@@ -26,6 +26,7 @@ var netFired = {}          # puppet: node path -> power, non-thruster systems th
 var netPdt = {}            # puppet: turret path -> [pivot rotation, fire power]
 var netDying = false       # puppet: its owner's ship is exploding (s.die)
 var coopTurrets = null     # owner: turrets found once the ship is set up
+var coopIntent = null      # authority: this NPC's last intent, streamed to mirrors by Npc.gd
 
 export var netSnapDistance = 400.0
 export var netSnapAngle = 0.6
@@ -61,13 +62,16 @@ func executeThrusterFire(solve: bool, delta: float):
 			if node != null and node.has_method("fire"):
 				node.fire(netFired[path])
 				fired[node] = netFired[path]
-	elif playerControlled:
-		var net = _coopNet()
-		if net != null:
-			var intent = thrusterShedule.duplicate()
-			intent["_f"] = _coopFired()
-			intent["_pdt"] = _coopTurretStates()
-			net.captureIntent(self, intent)
+	elif playerControlled or has_meta("dvnet_npc"):
+		var intent = thrusterShedule.duplicate()
+		intent["_f"] = _coopFired()
+		intent["_pdt"] = _coopTurretStates()
+		if playerControlled:
+			var net = _coopNet()
+			if net != null:
+				net.captureIntent(self, intent)
+		else:
+			coopIntent = intent
 	.executeThrusterFire(solve, delta)
 
 func _coopFired() -> Dictionary:
@@ -122,23 +126,33 @@ func _integrate_forces(state):
 func _coopNoDamage() -> bool:
 	return netControlled or Engine.has_meta("dvcoop_fx_only")
 
+# A local weapon (forwarding context) hitting the mirror of an NPC another machine runs: send it there (Npc.gd d.ship).
+func _coopForward(kind, a, b = null, c = null) -> bool:
+	if not (netControlled and has_meta("dvnet_mirror") and Engine.has_meta("dvcoop_forward")):
+		return false
+	var net = _coopNet()
+	var npc = net.get_node_or_null("Npc") if net != null else null
+	if npc != null:
+		npc.forwardShipHit(self, kind, a, b, c)
+	return true
+
 func applyKineticDamage(energy, point, delta = null):
-	if _coopNoDamage():
+	if _coopForward("k", energy, point, delta) or _coopNoDamage():
 		return
 	.applyKineticDamage(energy, point, delta)
 
 func applyEnergyDamage(energy, point, delta):
-	if _coopNoDamage():
+	if _coopForward("e", energy, point, delta) or _coopNoDamage():
 		return energy   # absorbed, so beams still stop at the hull
 	return .applyEnergyDamage(energy, point, delta)
 
 func applyEmpDamage(energy, point, delta):
-	if _coopNoDamage():
+	if _coopForward("m", energy, point, delta) or _coopNoDamage():
 		return
 	.applyEmpDamage(energy, point, delta)
 
 func applyHostility(f, amt, broadcast = true, factor = 0.25, includeIndependents = false):
-	if _coopNoDamage():
+	if _coopForward("h", f, amt) or _coopNoDamage():
 		return
 	.applyHostility(f, amt, broadcast, factor, includeIndependents)
 
