@@ -38,7 +38,7 @@ var fresh = []       # authority: ids that entered the field since the last tick
 var gone = []        # authority: ids that left the field (or started fracturing) since the last tick
 var held = []        # member: reliable packets [from, msg] waiting for the cell to be ready
 var snapSeen = null  # member: ids seen in the r.snap being received, or null
-var scenes = {}      # kind -> PackedScene
+var scenes = {}      # kind -> PackedScene: the only scenes a recipe may name (from the field's objectClass)
 var role = "solo"    # solo | authority | member
 var nearAccum = 0.0
 var farAccum = 0.0
@@ -120,6 +120,7 @@ func _onAuthorityChanged(newId):
 func _attach(f):
 	_detach()
 	field = f
+	_collectScenes()
 	field.connect("child_entered_tree", self, "_onChildEntered")
 	field.connect("child_exiting_tree", self, "_onChildExiting")
 	for c in field.get_children():
@@ -140,7 +141,19 @@ func _detach():
 	gone.clear()
 	held.clear()
 	snapSeen = null
+	scenes.clear()
 	role = "solo"
+
+# Everything spawnAsteroidByClass can produce, fracture shards included (they come from the same table).
+func _collectScenes():
+	scenes.clear()
+	for entry in field.objectClass:
+		var lists = entry.values() if entry is Dictionary else [entry]
+		for l in lists:
+			for ps in l:
+				var path = ps.resource_path
+				if path.begins_with(ROCK_PREFIX):
+					scenes[path.substr(ROCK_PREFIX.length()).trim_suffix(".tscn")] = ps
 
 static func isRock(node) -> bool:
 	var f = node.filename
@@ -182,26 +195,29 @@ func _recipe(id, n) -> Array:
 		n.linear_velocity, n.angular_velocity, n.asteroidClass, n.mineralContent if mineral else n.rnd,
 		n.estimatedRadius, 0 if mineral else n.splitsTo]
 
+static func _isNum(x) -> bool:
+	return x is float or x is int
+
+static func _validRecipe(rc) -> bool:
+	return rc is Array and rc.size() == 11 and rc[0] is String and rc[1] is String and _isNum(rc[2]) 		and rc[3] is Vector2 and _isNum(rc[4]) and rc[5] is Vector2 and _isNum(rc[6]) and _isNum(rc[7]) 		and _isNum(rc[8]) and _isNum(rc[9]) and _isNum(rc[10])
+
 func _build(rc):
 	var id = rc[0]
 	var kind = rc[1]
 	if not scenes.has(kind):
-		var path = ROCK_PREFIX + kind + ".tscn"
-		if not (kind.begins_with("class-") or kind.begins_with("mineral-")) or not ResourceLoader.exists(path):
-			Debug.l("COOP: RS unknown rock kind %s for %s" % [kind, id])
-			return
-		scenes[kind] = load(path)
+		Debug.l("COOP: RS dropped recipe %s: kind %s is not a spawner rock scene" % [id, kind])
+		return
 	var n = scenes[kind].instance()
 	n.set_meta("dvnet", id)
 	n.set_meta("dvnet_tracked", true)
 	n.position = rc[3]
 	n.rotation = rc[4]
-	n.asteroidClass = rc[7]
+	n.asteroidClass = int(rc[7])
 	n.estimatedRadius = rc[9]
 	var mineral = n.get("mineralContent") != null
 	if not mineral:
 		n.additionalScale = rc[2]   # asteroid._ready() applies it through setScale
-		n.splitsTo = rc[10]
+		n.splitsTo = int(rc[10])
 	field.add_child(n)
 	n.linear_velocity = rc[5]
 	n.angular_velocity = rc[6]
@@ -440,7 +456,10 @@ func _onSpawn(from, msg):
 	# an older generation is applied anyway (dropping it would lose the rock); its first r.u corrects the offset
 	if msg.get("first", false):
 		snapSeen = {}
-	for rc in msg.l:
+	for rc in msg.get("l", []):
+		if not _validRecipe(rc):
+			Debug.l("COOP: RS dropped malformed recipe from %s" % from)
+			continue
 		var id = rc[0]
 		if snapSeen != null:
 			snapSeen[id] = true
@@ -469,7 +488,10 @@ func _onDespawn(from, msg):
 	if (held.size() > 0 and not replaying) or not _ready_for(from, cell):
 		held.append([from, msg])   # keep order with spawns still waiting
 		return
-	for id in msg.l:
+	var l = msg.get("l")
+	if not (l is Array):
+		return
+	for id in l:
 		if tracked.has(id):
 			if is_instance_valid(tracked[id].n):
 				Tool.remove(tracked[id].n)
@@ -479,10 +501,13 @@ func _onUpdate(from, msg):
 	var cell = _cell()
 	if not _ready_for(from, cell) or msg.get("g", 0) != _gen(cell):
 		return
+	var ids = msg.get("i")
+	var f = msg.get("f")
+	if not (ids is PoolStringArray and f is PoolRealArray and f.size() == ids.size() * 6):
+		return
 	var now = OS.get_ticks_msec()
-	var f = msg.f
 	var i = 0
-	for id in msg.i:
+	for id in ids:
 		if tracked.has(id):
 			var t = tracked[id]
 			t.p = Vector2(f[i], f[i + 1])
