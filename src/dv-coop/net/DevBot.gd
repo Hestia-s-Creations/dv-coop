@@ -46,6 +46,9 @@ var results = {}     # member: id -> trial waiting for granted / denied
 var checks = []      # authority: [{trial, id, at (s), what}]
 var keepLast = false # claw: hold the last rock instead of releasing it
 var armFitted = false
+var fitted = null    # {slot, was}: what _fit changed in CurrentGame.state.ship, restored by _restore()
+var ammoAdded = 0.0
+var wasDived = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
 var shoot = {"state": "idle", "id": "", "until": 0.0}
@@ -91,6 +94,11 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 func _physics_process(delta):
+	if net.dived:
+		wasDived = true
+	elif wasDived:
+		wasDived = false
+		_restore()   # the dive ended
 	if mode == "claw":
 		_clawTick()
 		return
@@ -221,6 +229,7 @@ func _shootTick():
 	if mode == "massdriver" and not ammoGiven and ship.has_method("addAmmo"):
 		ammoGiven = true
 		ship.addAmmo(5000)
+		ammoAdded = 5000.0
 		Debug.l("COOP: BOT massdriver: +5000 kg ammo")
 	var w = _findWeapon(ship)
 	if w == null:
@@ -322,7 +331,31 @@ func _fit(system, prefer):
 			return
 	var slot = prefer if ws.has(prefer) else ws.keys()[0]
 	Debug.l("COOP: BOT %s: fitting %s to weaponSlot.%s (was %s)" % [mode, system, slot, ws[slot].get("type")])
+	fitted = {"slot": slot, "was": ws[slot].get("type")}
 	ws[slot]["type"] = system
+
+# Put the dev save's ship back as it was: the fitting lives in CurrentGame.state.ship (the live ship's shipConfig is
+# that same dict), so undo it before anything could save it. Runs when the dive ends, on quit and on exit.
+func _restore():
+	if fitted != null:
+		var ws = CurrentGame.state.ship.get("config", {}).get("weaponSlot", {})
+		if ws.has(fitted.slot):
+			ws[fitted.slot]["type"] = fitted.was
+			Debug.l("COOP: BOT restored weaponSlot.%s to %s" % [fitted.slot, fitted.was])
+		fitted = null
+	if ammoAdded > 0:
+		var ship = net.localShip
+		if ship != null and is_instance_valid(ship) and ship.has_method("drawAmmo"):
+			ship.drawAmmo(ammoAdded)
+			Debug.l("COOP: BOT took back %.0f kg ammo" % ammoAdded)
+		ammoAdded = 0.0
+
+func _notification(what):
+	if what == NOTIFICATION_WM_QUIT_REQUEST or what == NOTIFICATION_PREDELETE:
+		_restore()
+
+func _exit_tree():
+	_restore()
 
 func _arm():
 	var ship = net.localShip
