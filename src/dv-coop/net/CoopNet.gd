@@ -32,6 +32,7 @@ const RANGE_PUPPET_DROP = 45000.0
 const BEACON_TIMEOUT = 6.0
 const GAME_SCENE = "res://Game.tscn"
 const DEV_DIVE_TARGET = Vector2(15000, 12345678)
+const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd"]
 
 enum Transport { NONE, STEAM, ENET }
 
@@ -68,7 +69,14 @@ var intentAccum = 0.0
 var stateAccum = 0.0
 var statsAccum = 0.0
 
+# --- modules (M3+): packet type -> [object, method], called as method(from, msg) on the physics tick
+var handlers = {}
+
 func _ready():
+	for path in MODULES:
+		var m = load(path).new()
+		m.net = self
+		add_child(m)
 	for arg in OS.get_cmdline_args():
 		if arg == "--coop-host":
 			wantHost = true
@@ -260,6 +268,7 @@ func _sendRaw(peer, env: Dictionary, reliable: bool = true):
 				enet.set_target_peer(peer)
 			else:
 				env["to"] = peer
+				env["rel"] = reliable
 				bytes = var2bytes(env)
 				enet.set_target_peer(1)
 			enet.put_packet(bytes)
@@ -271,6 +280,20 @@ func _send(peer, msg: Dictionary, reliable: bool):
 func _broadcast(msg: Dictionary, reliable: bool):
 	for p in peers.keys():
 		_send(p, msg, reliable)
+
+# --- module API (M3+). Modules are child nodes of CoopNet; they read peers, myId, dived and localShip directly.
+
+# Route packets of type t to obj.method(from, msg). Module packet types are namespaced: "c.*" cells, "r.*" rocks.
+func on(t: String, obj: Object, method: String):
+	handlers[t] = [obj, method]
+
+func send(peer, msg: Dictionary, reliable: bool):
+	_send(peer, msg, reliable)
+
+func sendTo(ids: Array, msg: Dictionary, reliable: bool):
+	for p in ids:
+		if p != myId:
+			_send(p, msg, reliable)
 
 func _physics_process(delta):
 	# All network state is applied here, on the physics tick, never from callbacks.
@@ -310,7 +333,8 @@ func _recvRaw(link, bytes: PoolByteArray):
 		# relay client -> client
 		var to = env.to
 		env.erase("to")
-		var reliable = (env.m.get("t") in ["hello", "ship", "shipreq", "bye", "peerlist", "peergone"])
+		var reliable = env.get("rel", true)
+		env.erase("rel")
 		var out = var2bytes(env)
 		enet.set_transfer_mode(NetworkedMultiplayerPeer.TRANSFER_MODE_RELIABLE if reliable else NetworkedMultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
 		enet.set_target_peer(to)
@@ -363,7 +387,10 @@ func _recv(from, msg: Dictionary):
 			Debug.l("COOP: BYE from %s" % from)
 			_peerGone(from)
 		_:
-			Debug.l("COOP: unknown packet type %s" % msg.t)
+			if handlers.has(msg.t):
+				handlers[msg.t][0].call(handlers[msg.t][1], from, msg)
+			else:
+				Debug.l("COOP: unknown packet type %s" % msg.t)
 
 func _puppetOf(id):
 	if peers.has(id):

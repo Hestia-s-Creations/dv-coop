@@ -8,6 +8,7 @@
 set -e
 cd "$(dirname "$0")/.."
 . tools/dvenv.sh
+dv_lock
 B="$DV_INST/dvcoop_instB"
 C="$DV_INST/dvcoop_instC"
 OFF_C="${1:-60000}"

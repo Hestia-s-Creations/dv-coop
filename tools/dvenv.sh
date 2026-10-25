@@ -1,7 +1,7 @@
 # Sourced by dev2.sh / dev3.sh. Finds the game and its user data on Windows (Git Bash) or Linux,
 # and starts instances with their own user data dir.
 #   DV_GAME  game folder (holds the Delta-V binary and mods/)
-#   DV_DATA  folder that holds dV/ for the main instance (%APPDATA% on Windows)
+#   DV_DATA  folder that holds dV/ for the main instance (Windows: ~/dvcoop-data, a copy of %APPDATA%/dV)
 #   DV_INST  where the extra instances' data dirs go
 
 FLATPAK_STEAM="$HOME/.var/app/com.valvesoftware.Steam"
@@ -29,7 +29,12 @@ case "$DV_GAME" in "$FLATPAK_STEAM"/*) DV_FLATPAK=1 ;; *) DV_FLATPAK= ;; esac
 
 if [ "$DV_OS" = windows ]; then
   DV_EXE="$DV_GAME/Delta-V.exe"
-  DV_DATA="${DV_DATA:-$APPDATA}"
+  # Dev instances never use the real %APPDATA%\dV: the main one gets a copy, made on first use.
+  DV_DATA="${DV_DATA:-$HOME/dvcoop-data}"
+  if [ ! -d "$DV_DATA/dV" ]; then
+    mkdir -p "$DV_DATA/dV"
+    for f in "$APPDATA/dV"/*; do [ "$(basename "$f")" = logs ] || cp -r "$f" "$DV_DATA/dV/"; done
+  fi
   DV_INST="${DV_INST:-$HOME/AppData/Local/Temp}"
 else
   DV_EXE="$(find "$DV_GAME" -maxdepth 1 -type f -name 'Delta-V*' ! -name '*.pck' ! -name '*.exe' | head -1)"
@@ -71,11 +76,7 @@ dv_launch() {
   local root="$1"; shift
   cd "$DV_GAME"
   if [ "$DV_OS" = windows ]; then
-    if [ -n "$root" ]; then
-      ( APPDATA="$(cygpath -w "$root")" "$DV_EXE" "$@" >/dev/null 2>&1 & )
-    else
-      ( "$DV_EXE" "$@" >/dev/null 2>&1 & )
-    fi
+    ( APPDATA="$(cygpath -w "${root:-$DV_DATA}")" "$DV_EXE" "$@" >/dev/null 2>&1 & )
   elif [ -n "$DV_FLATPAK" ]; then
     local inst; inst="$(dv_steam_instance)"
     [ -n "$inst" ] || { echo "Flatpak Steam is not running; start it and log in first" >&2; exit 1; }
@@ -87,4 +88,16 @@ dv_launch() {
     ( XDG_DATA_HOME="${root:-$DV_DATA}" "$DV_EXE" "$@" >/dev/null 2>&1 & )
   fi
   cd - >/dev/null
+}
+
+# One game install, several people working: dev2/dev3 take this lock before building (the build replaces
+# mods/dv-coop.zip) and tools/stop.sh releases it. DV_WHO names the holder in the "busy" message.
+DV_LOCK="${DV_LOCK:-$HOME/.dvcoop-gamelock}"
+dv_lock() {
+  if mkdir "$DV_LOCK" 2>/dev/null; then
+    echo "${DV_WHO:-$(pwd)} $(date +%H:%M:%S)" > "$DV_LOCK/owner"
+  else
+    echo "game busy, held by: $(cat "$DV_LOCK/owner" 2>/dev/null). Wait, or run tools/stop.sh if it's yours." >&2
+    exit 2
+  fi
 }
