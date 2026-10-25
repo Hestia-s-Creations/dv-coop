@@ -22,8 +22,9 @@ func _coopOwn():
 func _coopPuppet() -> bool:
 	return ship != null and ship.get("netControlled") == true
 
+# Godot 3 calls _ready / _physics_process on every script level (base first), so no explicit super calls here:
+# this runs right after the stock arm's own tick.
 func _ready():
-	._ready()
 	var own = _coopOwn()
 	if own != null:
 		own.connect("denied", self, "_coopDenied")
@@ -44,7 +45,6 @@ func addToQueue(body):
 	.addToQueue(body)
 
 func _physics_process(delta):
-	._physics_process(delta)
 	if _coopPuppet():
 		return
 	var own = _coopOwn()
