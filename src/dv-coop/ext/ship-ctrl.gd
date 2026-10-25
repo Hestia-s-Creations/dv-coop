@@ -12,10 +12,6 @@ extends "res://ships/ship-ctrl.gd"
 # (captureIntent) so the other machine's puppet fires the same thrusters. Systems that are not thrusters
 # (weapons, claws, drone plants) fire outside the schedule (fireMatching -> node.fire), so their powers ride
 # along in the same intent under "_f" (node path -> power), and turret aim and fire under "_pdt".
-#
-# Godot 3 calls _ready / _process on every level of the script chain by itself, so this file never calls the
-# stock _ready or _process explicitly (that ran them twice per frame up to M3). Regular methods
-# (executeThrusterFire, vanish, the damage functions) still call the stock one with a leading dot.
 
 var coopExtensionActive = true
 

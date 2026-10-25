@@ -19,7 +19,7 @@ ac3fcd85ffff3165a41b70205da626146552b7d653bdb5f70664461bd46ecfb8  src/dv-coop/ex
 f19433ac1e2eb5347c3dd1686c4a7d59746834501ed1df990dd474433826c356  src/dv-coop/ext/drone-plant.gd
 391a08f91dac4a1cb582e8c5345d94d9cb2681775257a20072a5f42cd47d706c  src/dv-coop/ext/emp.gd
 be4e2840bea26662ca944ba1e31d20286d011f4092f54f3e419dc00360ff1eae  src/dv-coop/ext/laser.gd
-02a80d6319e2e42835d281908384d4e6a80193be30012f18f6b050d2e08d95f5  src/dv-coop/ext/ship-ctrl.gd
+28f1bd7239712d8e780d8252e207c7df8f8035129be985924ce241c6a91b9af6  src/dv-coop/ext/ship-ctrl.gd
 cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ext/synchrotron.gd
 6597e25d07e2eb16f9bcf3eef038f6fd5f47ea95290e7a3770f5561e93552c63  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
