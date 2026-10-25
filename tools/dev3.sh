@@ -16,6 +16,8 @@ dv_lock
 R="$DV_INST/dvcoop_instR"
 B="$DV_INST/dvcoop_instB"
 C="$DV_INST/dvcoop_instC"
+# RES_A set: A gets its own seeded data dir like B/C, so the shared ~/dvcoop-data settings are never edited
+A=""; [ -n "$RES_A" ] && A="$DV_INST/dvcoop_instA"
 OFF_C="${1:-60000}"
 SLOT_B="${2:-savegame-b.dv}"
 SLOT_C="${3:-savegame.dv}"
@@ -30,19 +32,24 @@ WARP=(); [ "$WARP_C" != 0 ] && WARP=(--coop-warp-to-peer="$WARP_C,$WARP_C_DIST")
 "$DV_PY" -I tools/build.py
 
 dv_seed "$R"
+[ -n "$A" ] && dv_seed "$A"
 dv_seed "$B"
 dv_seed "$C"
-dv_clear_logs "$DV_DATA" "$R" "$B" "$C"
+dv_clear_logs "$DV_DATA" ${A:+"$A"} "$R" "$B" "$C"
+SR=tools/setres.py
+[ -n "$RES_A" ] && "$DV_PY" -I $SR "$A/dV/settings.cfg" $RES_A ${UI_A:-0.9}
+[ -n "$RES_B" ] && "$DV_PY" -I $SR "$B/dV/settings.cfg" $RES_B ${UI_B:-0.9}
+[ -n "$RES_C" ] && "$DV_PY" -I $SR "$C/dV/settings.cfg" $RES_C ${UI_C:-0.9}
 
 dv_launch "$R" --enable-mods --coop-enet-host=7777
 sleep 6
-dv_launch "" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$DIVE_Y
+dv_launch "$A" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$DIVE_Y $EXTRA_A
 sleep 6
-dv_launch "$B" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_B)) --coop-slot="$SLOT_B"
+dv_launch "$B" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_B)) --coop-slot="$SLOT_B" $EXTRA_B
 sleep 6
-dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_C)) --coop-slot="$SLOT_C" "${WARP[@]}"
+dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_C)) --coop-slot="$SLOT_C" "${WARP[@]}" $EXTRA_C
 echo "launched R (relay), A, B (+$OFF_B), C (+$OFF_C, warp ${WARP_C}s). logs:"
 echo "  R: $R/dV/logs/dv_log_*.txt"
-echo "  A: $DV_DATA/dV/logs/dv_log_*.txt"
+echo "  A: ${A:-$DV_DATA}/dV/logs/dv_log_*.txt"
 echo "  B: $B/dV/logs/dv_log_*.txt"
 echo "  C: $C/dV/logs/dv_log_*.txt"

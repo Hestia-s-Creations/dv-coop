@@ -45,6 +45,7 @@ src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop
 tools/build.py          zips src/ -> build/dv-coop.zip (reproducible, prints its SHA-256) and copies it into <game>/mods/
 tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
+tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
 llms.txt                setup instructions for AI agents
 tools/dvenv.sh          game, data and launcher paths for the dev loops (Windows Git Bash or Linux)
