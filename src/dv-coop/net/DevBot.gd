@@ -334,7 +334,7 @@ func _fracClaim(now):
 	match frac.state:
 		"wait":
 			if not frac.has("jit"):
-				frac.jit = int(rand_range(-300, 100))
+				frac.jit = int(rand_range(-150, 400))   # both orders occur: the fracture flag appears a tick after `at`
 				frac.before = {}
 				for id in rs.tracked:
 					frac.before[id] = true
