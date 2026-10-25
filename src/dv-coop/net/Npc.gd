@@ -244,13 +244,13 @@ func _devFireTick(delta):
 	fireClock += delta
 	if fireClock >= fireAfter and fireClock < fireAfter + 10.0:
 		if not Engine.has_meta("dvcoop_dev_fireall"):
+			# the same nodes the stock fireMatching walks (ship-ctrl.gd :2641), minus thrusters
 			var cmds = []
-			var systems = ship.getSystems()
-			for k in systems:
-				var ref = systems[k].ref
-				var cmd = ref.get("command") if is_instance_valid(ref) else null
-				if cmd is String and cmd != "" and not (ref.name in ship.thrusters) and not cmds.has(cmd):
-					cmds.append(cmd)
+			for node in ship.get_children() + ship.externalSystems:
+				if is_instance_valid(node) and node.has_method("fire") and "command" in node and not (node.name in ship.thrusters):
+					var cmd = node.command
+					if cmd is String and cmd != "" and not cmds.has(cmd):
+						cmds.append(cmd)
 			Engine.set_meta("dvcoop_dev_fireall", cmds)
 			_log("dev: firing %s on my ship for 10 s" % [cmds])
 	elif Engine.has_meta("dvcoop_dev_fireall"):

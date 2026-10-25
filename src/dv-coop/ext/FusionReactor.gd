@@ -18,6 +18,9 @@ func coopTick(delta):
 	var queued = Tool.physicsQueue.size()
 	var kids = get_child_count()
 	._physics_process(delta)
+	if exploding and not coopBlastLogged and boomCount <= 0:
+		coopBlastLogged = true
+		Debug.l("COOP: SHIPS blast of '%s' finished: particles %s here" % [ship.name, "physical" if _coopSimulatesRocks() else "ghosted (no collision)"])
 	if not exploding or _coopSimulatesRocks():
 		return
 	for i in range(queued, Tool.physicsQueue.size()):
@@ -27,6 +30,8 @@ func coopTick(delta):
 	for i in range(kids, get_child_count()):
 		if get_child(i) is CollisionObject2D:
 			_coopGhost(get_child(i))
+
+var coopBlastLogged = false
 
 func _coopGhost(body):
 	body.collision_layer = 0
