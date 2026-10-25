@@ -3,7 +3,8 @@
 # instance, taken before a run and compared after it.
 #   tools/savecheck.sh before [label]   record hashes (default label "run")
 #   tools/savecheck.sh after  [label]   hash again, print every changed file, exit 1 if any changed
-# Covers the main dev data (~/dvcoop-data) and every $DV_INST/dvcoop_inst* data dir. Never touches the real
+# Covers the main dev data (~/dvcoop-data) and every $DV_INST/dvcoop_inst* data dir except dvcoop_instR (the ENet
+# relay at the title screen, not a player; the game rewrites its save around boot). Never touches the real
 # %APPDATA%/dV. Take "before" right after dev3.sh launches (the instances only read saves at boot) and "after"
 # once tools/stop.sh has run.
 cd "$(dirname "$0")/.."
@@ -14,6 +15,7 @@ REC="$DV_INST/dvcoop-savecheck-$LABEL.txt"
 
 hashes() {
   for d in "$DV_DATA" "$DV_INST"/dvcoop_inst*; do
+    [ "$(basename "$d")" = dvcoop_instR ] && continue
     for f in "$d"/dV/savegame*.dv; do
       [ -f "$f" ] && "$DV_PY" -I -c 'import hashlib,sys; print(hashlib.sha1(open(sys.argv[1],"rb").read()).hexdigest(), sys.argv[1])' "$f"
     done
