@@ -42,7 +42,7 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
-	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new"]:
+	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new", "b.new"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	call_deferred("_hook")
 
@@ -50,6 +50,7 @@ func _hook():
 	var rs = _rs()
 	if rs != null:
 		rs.connect("rock_born", self, "_onRockBorn")
+		rs.connect("body_born", self, "_onBodyBorn")
 		rs.connect("rock_gone", self, "_onRockGone")
 
 func _rs():
@@ -273,6 +274,59 @@ func _on_o_new(from, msg):
 		if rs.buildSimulated(rc) != null:
 			built += 1
 	Debug.l("COOP: OWN o.new from %s: %d shards built, parents %s" % [from, built, msg.get("parents")])
+
+# ---------------------------------------------------------------- bullets (b.new)
+#
+# A bullet is a physics body; its push and its kinetic damage come from contact, so it can't be forwarded as an event.
+# The shooter announces it (b.new) and every machine runs a ballistic copy. Damage on a rock counts only where the rock
+# is owned: on everyone else the rock is a tracked copy, which takes effects only. A bullet that a puppet's mass driver
+# spawns here (the stock tick replaying the owner's fire) is removed: the owner's b.new replaces it. Copies carry no
+# shooter, so hostility is applied once, by the Ships track on the target's owner.
+
+const BULLET_PREFIX = "res://weapons/projectiles/"
+
+func _onBodyBorn(id, node):
+	if not _inCell() or node.get("shooter") == null or node.has_meta("dvnet_bullet"):
+		return
+	var shooter = node.shooter
+	if not is_instance_valid(shooter):
+		return
+	if shooter.has_meta("dvnet_puppet") or shooter.has_meta("dvnet_mirror"):
+		node.set_meta("dvnet_bullet", "replaced")
+		node.collision_layer = 0
+		node.collision_mask = 0
+		Tool.deferCallInPhysics(Tool, "remove", [node])   # not from inside its own tree-entered callback
+		return
+	if shooter != net.localShip or not node.filename.begins_with(BULLET_PREFIX):
+		return
+	var li = node.get("lingeringImpulse")
+	var msg = {"t": "b.new", "id": id, "s": node.filename, "p": node.global_position, "r": node.global_rotation,
+		"v": node.linear_velocity, "li": li if li is Vector2 else Vector2(), "g": _rs()._gen(_cell())}
+	for p in _cell().members():
+		if p != net.myId:
+			net.send(p, msg, true)
+
+func _on_b_new(from, msg):
+	var c = _cell()
+	if c == null or not c.inCell() or int(msg.get("g", -1)) != _rs()._gen(c):
+		return
+	var path = str(msg.get("s", ""))
+	if not path.begins_with(BULLET_PREFIX) or not path.ends_with(".tscn") or ".." in path or not ResourceLoader.exists(path):
+		Debug.l("COOP: OWN dropped b.new from %s: %s is not a projectile scene" % [from, path])
+		return
+	var rs = _rs()
+	if rs.field == null or not (msg.get("p") is Vector2) or not (msg.get("v") is Vector2):
+		return
+	var b = load(path).instance()
+	b.set_meta("dvnet", str(msg.get("id")))
+	b.set_meta("dvnet_bullet", from)
+	b.shooter = null
+	b.global_position = msg.p
+	b.rotation = float(msg.get("r", 0.0))
+	b.linear_velocity = msg.v
+	if msg.get("li") is Vector2 and msg.li != Vector2():
+		b.lingeringImpulse = msg.li
+	rs.field.add_child(b)
 
 # ---------------------------------------------------------------- authority: arbitration
 

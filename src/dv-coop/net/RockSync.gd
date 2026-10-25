@@ -31,6 +31,7 @@ var net = null   # CoopNet
 
 signal rock_born(id, node)    # a rock entered the field on this machine (spawned here or built from a recipe)
 signal rock_gone(id, node)    # a rock is leaving the field (despawn, fracture, consumed, pruned)
+signal body_born(id, node)    # any RigidBody2D entered the field (bullets, ships, rocks)
 
 var field = null
 var counter = 0
@@ -289,6 +290,7 @@ func _onChildEntered(node):
 		id = "%d:%d" % [net.myId, counter]
 		node.set_meta("dvnet", id)
 	bodies[id] = node
+	emit_signal("body_born", id, node)
 	if isRock(node):
 		emit_signal("rock_born", id, node)
 		if not node.has_meta("dvnet_tracked"):
