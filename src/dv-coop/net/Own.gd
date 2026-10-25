@@ -25,6 +25,8 @@ var pending = {}      # member: id -> {at (s), why}
 var mine = {}         # member: id -> node, rocks this machine owns (not as authority)
 var heldHere = {}     # authority: id -> why, rocks the authority's own player is touching
 var tomb = {}         # authority: id -> time (s) it was consumed or fractured
+var reasons = {}      # id -> {why: true}: which local systems touch it (claw, hold, mpu, ...); released when empty
+var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run when granted
 var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta], ...]
 var streamAccum = 0.0
 var conserveAccum = 0.0
@@ -37,7 +39,7 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
-	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list"]:
+	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	call_deferred("_hook")
 
@@ -85,8 +87,12 @@ func touch(node, why) -> bool:
 	if not _inCell() or node == null or not node.has_meta("dvnet"):
 		return true
 	var id = node.get_meta("dvnet")
+	if not reasons.has(id):
+		reasons[id] = {}
+	reasons[id][why] = true
 	if _isAuthority():
 		if owners.has(id):
+			reasons.erase(id)
 			emit_signal("denied", id, "held")
 			return false
 		heldHere[id] = why
@@ -113,6 +119,11 @@ func untouch(node, why):
 	if node == null or not is_instance_valid(node) or not node.has_meta("dvnet"):
 		return
 	var id = node.get_meta("dvnet")
+	if reasons.has(id):
+		reasons[id].erase(why)
+		if not reasons[id].empty():
+			return   # another local system still touches it (e.g. the claw fed it into the hold)
+		reasons.erase(id)
 	if heldHere.has(id):
 		heldHere.erase(id)
 		return
@@ -138,6 +149,80 @@ func _resumeCorrection(id):
 	var t = _rs().trackedState(id)
 	if t != null:
 		t.erase("hold")
+
+# ---------------------------------------------------------------- cargo hold and consumption (hooks for ext/ship-ctrl.gd)
+
+static func _isOtherPlayers(body) -> bool:
+	return body.has_meta("dvnet_puppet") or body.has_meta("dvnet_mirror")
+
+# Stock processEnteringCargoBay is about to count `body` into `ship`'s hold. False: don't count it (yet).
+func holdEnter(ship, body) -> bool:
+	if body == null or not is_instance_valid(body):
+		return false
+	if _isOtherPlayers(body):
+		return false   # never scoop another player's ship, pod or drone
+	if not _inCell() or not body.has_meta("dvnet") or not _rs().isRock(body):
+		return true
+	var ok = touch(body, "hold")
+	if not ok and pending.has(body.get_meta("dvnet")):
+		holdRetry[body.get_meta("dvnet")] = ship
+	return ok
+
+# Stock processExitingCargoBay just ran for `body`.
+func holdExit(ship, body):
+	if body == null or not is_instance_valid(body) or not body.has_meta("dvnet"):
+		return
+	holdRetry.erase(body.get_meta("dvnet"))
+	if not ship.cargo.has(body):
+		untouch(body, "hold")
+
+# Stock claimCargo is about to turn `ship`'s hold into ship-state numbers and free the bodies.
+func beforeClaimCargo(ship):
+	for item in ship.cargo:
+		if is_instance_valid(item) and item.has_meta("dvnet") and _rs().isRock(item):
+			eat(item, "claimCargo")
+
+# `node`, a rock we own, is about to be freed into ship state (claimCargo, MPU). Tell the authority once.
+func eat(node, why):
+	if not _inCell() or node == null or not node.has_meta("dvnet"):
+		return
+	var id = node.get_meta("dvnet")
+	var comp = node.getComposition().duplicate() if node.has_method("getComposition") else {}
+	reasons.erase(id)
+	if _isAuthority():
+		if owners.has(id):
+			Debug.l("COOP: OWN refusing to eat %s: owned by %s" % [id, owners[id]])
+			return
+		heldHere.erase(id)
+		_tombstone(id, comp, why)
+		return
+	if not mine.has(id):
+		Debug.l("COOP: OWN eat %s (%s) but we don't own it" % [id, why])
+		return
+	mine.erase(id)
+	net.send(_cell().authority(), {"t": "o.eat", "id": id, "e": epochOf(id), "c": comp, "why": why}, true)
+	Debug.l("COOP: OWN eat %s (%s) %s" % [id, why, comp])
+
+func _tombstone(id, comp, why):
+	tomb[id] = _now()
+	eatenIds[id] = true
+	for k in comp:
+		cons.eaten[k] = cons.eaten.get(k, 0.0) + float(comp[k])
+	Debug.l("COOP: OWN eaten %s (%s) %s" % [id, why, comp])
+
+func _on_o_eat(from, msg):
+	if not _isAuthority():
+		return
+	var id = str(msg.get("id"))
+	if owners.get(id) != from or int(msg.get("e", -1)) != epochOf(id):
+		Debug.l("COOP: OWN stale eat %s from %s (owner %s e=%d)" % [id, from, owners.get(id), epochOf(id)])
+		return
+	owners.erase(id)
+	var comp = msg.get("c", {})
+	_tombstone(id, comp if comp is Dictionary else {}, str(msg.get("why")))
+	var node = _rs().untrack(id)
+	if node != null:
+		Tool.remove(node)   # its exit sends r.d to every member that knows it
 
 # ---------------------------------------------------------------- authority: arbitration
 
@@ -226,6 +311,11 @@ func _on_o_ok(from, msg):
 		node.reset_physics_interpolation()
 	Debug.l("COOP: OWN granted %s e=%d" % [id, e])
 	emit_signal("granted", id)
+	if holdRetry.has(id):
+		var ship = holdRetry[id]
+		holdRetry.erase(id)
+		if is_instance_valid(ship) and is_instance_valid(node):
+			ship.processEnteringCargoBay(node)   # the stock entry we held back, now on a rock we own
 
 func _on_o_no(from, msg):
 	var id = str(msg.get("id"))
@@ -235,6 +325,8 @@ func _on_o_no(from, msg):
 		owners[id] = int(msg.owner)
 	if pending.has(id):
 		pending.erase(id)
+		reasons.erase(id)
+		holdRetry.erase(id)
 		_resumeCorrection(id)
 		Debug.l("COOP: OWN denied %s (%s)" % [id, msg.get("why")])
 		emit_signal("denied", id, str(msg.get("why")))
