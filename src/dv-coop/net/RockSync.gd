@@ -44,6 +44,7 @@ var nearAccum = 0.0
 var farAccum = 0.0
 var interestAccum = 0.0
 var logAccum = 0.0
+var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
 var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
 var hooked = null    # the Cell whose signals we listen to
@@ -51,6 +52,10 @@ var replaying = false
 
 func _ready():
 	name = "RockSync"
+	var sample = OS.get_environment("DVCOOP_RS_SAMPLE")
+	if sample != "" and float(sample) > 0:
+		logEvery = max(0.2, float(sample))
+		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
@@ -276,7 +281,7 @@ func _physics_process(delta):
 			gone.clear()
 
 	logAccum += delta
-	if logAccum >= LOG_EVERY:
+	if logAccum >= logEvery:
 		logAccum = 0.0
 		_logState()
 
@@ -583,7 +588,7 @@ func _logState():
 	# ms = wall clock, so lines from different machines can be lined up to the millisecond
 	var line = "COOP: RS role=%s ms=%d bodies=%d rocks=%d tracked=%d" % [role, OS.get_system_time_msecs(), bodies.size(), rocks.size(), tracked.size()]
 	if role == "authority":
-		line += " recv=%d sent s=%d d=%d u=%d up=%.1f kB/s" % [receivers.size(), sent.s, sent.d, sent.u, sent.bytes / 1000.0 / LOG_EVERY]
+		line += " recv=%d sent s=%d d=%d u=%d up=%.1f kB/s" % [receivers.size(), sent.s, sent.d, sent.u, sent.bytes / 1000.0 / logEvery]
 		for peer in receivers:
 			var at = _receiverPos(peer)
 			if at != null:
