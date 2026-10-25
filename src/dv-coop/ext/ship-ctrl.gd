@@ -62,7 +62,13 @@ func executeThrusterFire(solve: bool, delta: float):
 			if node != null and node.has_method("fire"):
 				node.fire(netFired[path])
 				fired[node] = netFired[path]
+		if netFired.size() > 0:
+			_coopCount("replayed", netFired.size())
 	elif playerControlled or has_meta("dvnet_npc"):
+		if playerControlled and Engine.has_meta("dvcoop_dev_fireall"):
+			# dev (Npc --coop-dev-fireall): hold every non-thruster command, so puppets have systems to replay
+			for cmd in Engine.get_meta("dvcoop_dev_fireall"):
+				fireMatching(cmd, 1.0)
 		var intent = thrusterShedule.duplicate()
 		intent["_f"] = _coopFired()
 		intent["_pdt"] = _coopTurretStates()
@@ -124,7 +130,16 @@ func _integrate_forces(state):
 # frees a puppet. Ship damage and destruction get replicated from the owner in M4.
 
 func _coopNoDamage() -> bool:
-	return netControlled or Engine.has_meta("dvcoop_fx_only")
+	if Engine.has_meta("dvcoop_fx_only"):
+		_coopCount("fxOnly", 1)
+		return true
+	return netControlled
+
+func _coopCount(what, n):
+	var net = _coopNet()
+	var npc = net.get_node_or_null("Npc") if net != null else null
+	if npc != null:
+		npc.count(what, n)
 
 # A local weapon (forwarding context) hitting the mirror of an NPC another machine runs: send it there (Npc.gd d.ship).
 func _coopForward(kind, a, b = null, c = null) -> bool:

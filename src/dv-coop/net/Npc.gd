@@ -19,6 +19,8 @@ extends Node
 #
 # Dev: --coop-dev-explode=<s>  s seconds after my dive cutscene ends, blow up my own ship (gate 8).
 #      --coop-dev-pirate=<s>   as cell authority, s seconds into the cell, spawn a pirate TRTL near a member (gate 9).
+#      --coop-dev-fireall=<s>  s seconds after my dive cutscene ends, hold every non-thruster command (weapons,
+#                              claws, drones) for 10 s, so the puppets of my ship replay them (gate 7).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -47,6 +49,10 @@ var pirateClock = 0.0
 var pirateDone = false
 var shootAfter = -1.0
 var shootClock = 0.0
+var fireAfter = -1.0
+var fireClock = 0.0
+var counts = {}      # 5 s summary: puppet systems replayed, hits turned into effects only
+var countAccum = 0.0
 
 func _ready():
 	name = "Npc"
@@ -63,6 +69,8 @@ func _ready():
 			pirateAfter = float(arg.substr(18))
 		elif arg.begins_with("--coop-dev-shoot="):
 			shootAfter = float(arg.substr(17))
+		elif arg.begins_with("--coop-dev-fireall="):
+			fireAfter = float(arg.substr(19))
 
 func _log(s):
 	Debug.l("COOP: NPC " + s)
@@ -104,6 +112,38 @@ func _physics_process(delta):
 	_devExplodeTick(delta)
 	_devPirateTick(delta)
 	_devShootTick(delta)
+	_devFireTick(delta)
+	countAccum += delta
+	if countAccum >= 5.0:
+		countAccum = 0.0
+		if counts.size() > 0:
+			_log("ships 5 s: %s, mirrors=%d npcs=%d pods=%d" % [counts, mirrors.size(), npcs.size(), pods.size()])
+		counts = {}
+
+func count(what, n):
+	counts[what] = counts.get(what, 0) + n
+
+func _devFireTick(delta):
+	if fireAfter < 0:
+		return
+	var ship = net.localShip
+	if ship == null or not is_instance_valid(ship) or ship.cutscene or not ship.get("setup"):
+		return
+	fireClock += delta
+	if fireClock >= fireAfter and fireClock < fireAfter + 10.0:
+		if not Engine.has_meta("dvcoop_dev_fireall"):
+			var cmds = []
+			var systems = ship.getSystems()
+			for k in systems:
+				var ref = systems[k].ref
+				var cmd = ref.get("command") if is_instance_valid(ref) else null
+				if cmd is String and cmd != "" and not (ref.name in ship.thrusters) and not cmds.has(cmd):
+					cmds.append(cmd)
+			Engine.set_meta("dvcoop_dev_fireall", cmds)
+			_log("dev: firing %s on my ship for 10 s" % [cmds])
+	elif Engine.has_meta("dvcoop_dev_fireall"):
+		Engine.remove_meta("dvcoop_dev_fireall")
+		_log("dev: stopped firing")
 
 func _podsTick():
 	var game = net._gameScene()
