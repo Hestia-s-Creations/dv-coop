@@ -14,6 +14,7 @@ const EXTENSIONS = [
 	"res://dv-coop/ext/asteroid.gd",
 	"res://dv-coop/ext/AsteroidSpawner.gd",
 	"res://dv-coop/ext/DockingArm.gd",
+	"res://dv-coop/ext/MineralProcessingUnit.gd",
 	"res://dv-coop/ext/ship-ctrl.gd",
 	"res://dv-coop/ext/laser.gd",
 	"res://dv-coop/ext/emp.gd",
