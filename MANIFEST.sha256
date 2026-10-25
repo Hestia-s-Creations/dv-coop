@@ -17,7 +17,7 @@ de702816472f47ad6ab50f64f1e397d943cd26bcc4788e36891f90731b7d919a  src/dv-coop/ex
 ae012c4b0bc9b5c50bc4de3062c9983bc10d623efc94be9e36c2d47e410ccf56  src/dv-coop/ext/MineralProcessingUnit.gd
 ac3fcd85ffff3165a41b70205da626146552b7d653bdb5f70664461bd46ecfb8  src/dv-coop/ext/PDT.gd
 cf08439cf3455885e1fab25872971b7d4972c092271eef6ae5666917f4547498  src/dv-coop/ext/Reactor.gd
-b8089764d174c6847d4d6a4691a1037a666c8ca004561a96e732c88737aceb26  src/dv-coop/ext/asteroid.gd
+efc77ddc7ca12350a35a16baeb14250c673c683dc0367388866ab2a4876c686a  src/dv-coop/ext/asteroid.gd
 f19433ac1e2eb5347c3dd1686c4a7d59746834501ed1df990dd474433826c356  src/dv-coop/ext/drone-plant.gd
 391a08f91dac4a1cb582e8c5345d94d9cb2681775257a20072a5f42cd47d706c  src/dv-coop/ext/emp.gd
 be4e2840bea26662ca944ba1e31d20286d011f4092f54f3e419dc00360ff1eae  src/dv-coop/ext/laser.gd
