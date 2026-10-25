@@ -34,6 +34,9 @@ extends Node
 #                              Addlet, a moonlet) 30 km ahead of me, so my spawner makes the oddity (gate 9c).
 #      --coop-dev-return=<s>   s seconds after joining a cell, jump back to where I placed the test POI, which takes
 #                              me out of the cell, so the freed oddity must come back from its POI (gate 9c).
+#      --coop-dev-pause=<s>    s seconds into a cell, drive every pause entry point in turn (window focus loss,
+#                              Steam overlay closed, pause key open and close, overlay open and closed), logging my
+#                              ship's position at each step (gate 11: the cell keeps running).
 #      --coop-dev-shoot=<s>    as member, s seconds after a mirror appears, hit the nearest mirror the way a laser
 #                              does, for 5 s, through the real forwarding path (gate 9).
 
@@ -70,6 +73,9 @@ var poiAt = null
 var returnAfter = -1.0
 var returnClock = 0.0
 var returned = false
+var pauseAfter = -1.0
+var pauseClock = 0.0
+var pauseStep = 0
 var storyNpc = false
 var storyDone = false
 var storyKept = null
@@ -104,6 +110,8 @@ func _ready():
 			poiEvent = arg.substr(15)
 		elif arg.begins_with("--coop-dev-return="):
 			returnAfter = float(arg.substr(18))
+		elif arg.begins_with("--coop-dev-pause="):
+			pauseAfter = float(arg.substr(17))
 		elif arg == "--coop-dev-story-npc":
 			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
@@ -257,6 +265,7 @@ func _physics_process(delta):
 	_devStoryTick()
 	_devKillTick(delta)
 	_devPoiTick(delta)
+	_devPauseTick(delta)
 	devStep = 5
 	if trace:
 		_log("dev trace: reached step %d" % devStep)
@@ -338,6 +347,46 @@ func _devPoiTick(delta):
 	ship.teleportBy(CurrentGame.localCoords(poiAt) - ship.global_position)
 	ship.reset_physics_interpolation()
 	_log("dev: returned to %s, near the test POI, to leave the cell" % [poiAt])
+
+const PAUSE_STEPS = [
+	[0.0, "window focus lost"],
+	[5.0, "Steam overlay closed"],
+	[8.0, "pause key (open)"],
+	[12.0, "pause key (close)"],
+	[15.0, "Steam overlay opened"],
+	[20.0, "Steam overlay closed"],
+]
+
+func _devPauseTick(delta):
+	if pauseAfter < 0 or pauseStep >= PAUSE_STEPS.size():
+		return
+	var cell = _cell()
+	var game = net._gameScene()
+	var ship = net.localShip
+	if cell == null or game == null or not cell.inCell() or ship == null or not is_instance_valid(ship):
+		return
+	pauseClock += delta
+	if pauseClock < pauseAfter + PAUSE_STEPS[pauseStep][0]:
+		return
+	var step = PAUSE_STEPS[pauseStep]
+	var menu = game.get_node_or_null("PauseMenu")
+	match pauseStep:
+		0:
+			if menu != null:
+				menu.notification(MainLoop.NOTIFICATION_WM_FOCUS_OUT)
+		1, 5:
+			CurrentGame.emit_signal("pauseGame", false)
+		2, 3:
+			for pressed in [true, false]:
+				var ev = InputEventAction.new()
+				ev.action = "pause"
+				ev.pressed = pressed
+				Input.parse_input_event(ev)
+		4:
+			CurrentGame.emit_signal("pauseGame", true)
+	_log("dev pause step %d: %s; tree paused=%s menu=%s ship at %s" % [pauseStep, step[1], get_tree().paused,
+		menu.get_node("PauseContainer").visible if menu != null else "-", CurrentGame.globalCoords(ship.global_position)])
+	pauseStep += 1
 
 func count(what, n):
 	counts[what] = counts.get(what, 0) + n

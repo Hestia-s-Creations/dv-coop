@@ -218,6 +218,12 @@ func claimCargo(claimFor = self):
 		own.beforeClaimCargo(self)
 	return .claimCargo(claimFor)
 
+# The pause menu in a cell doesn't pause the game (PauseLayer ext); while it is open my ship takes no manual input.
+func manualControl(delta):
+	if Engine.has_meta("dvcoop_menu") and not netControlled:
+		return
+	.manualControl(delta)
+
 func vanish(except = []):
 	if netControlled:
 		if netDying:

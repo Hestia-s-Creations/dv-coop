@@ -350,6 +350,41 @@ def gate10(insts):
     return not bad and not twice, ev
 
 
+def _secs(line):
+    m = re.search(r"\[\d+/\d+/\d+ (\d+):(\d+):(\d+)\]", line)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
+
+
+def gate11(insts):
+    """Pause in a cell: focus loss, the Steam overlay and the pause key open the menu on one member without pausing
+    its game; the cell keeps that player (no silence, handoff or leave) and its ship keeps moving."""
+    ev = []
+    ok = True
+    staged = [i for i in insts if i.count(r"COOP: NPC dev pause step")]
+    if not staged:
+        return False, ["FAIL: not staged (use --coop-dev-pause=<s> on a member)"]
+    for i in staged:
+        steps = [l for l in i.lines if "COOP: NPC dev pause step" in l]
+        t0, t1 = _secs(steps[0]), _secs(steps[-1]) + 4
+        paused = [l for l in steps if "tree paused=True" in l]
+        opened = i.count(r"COOP: SHIPS pause menu open in a cell")
+        closed = i.count(r"COOP: SHIPS pause menu closed in a cell")
+        where = [re.search(r"ship at \((-?[\d.]+), (-?[\d.]+)\)", l) for l in steps]
+        moved = len({(round(float(m.group(1))), round(float(m.group(2)))) for m in where if m}) > 1
+        ev.append("%s: %d steps, menu opened %d / closed %d in a cell, tree paused at a step: %d, ship moving: %s" % (
+            i.name(), len(steps), opened, closed, len(paused), moved))
+        if len(steps) < 6 or opened < 3 or closed < 2 or paused or not moved:
+            ok = False
+            ev.append("FAIL: the menu must open and close without pausing, and the ship must keep moving")
+        for o in insts:
+            bad = [l for l in o.lines if (t0 or 0) <= (_secs(l) or -1) <= (t1 or 0)
+                   and re.search(r"COOP: CELL (authority \d+ silent|PROMOTED|LEFT cell|authority \d+ resigned)", l)]
+            if bad:
+                ok = False
+                ev.append("FAIL %s during the pause steps: %s" % (o.name(), bad[0][-120:]))
+    return ok, ev
+
+
 GATES = {
     1: gate1,
     2: gate2,
@@ -363,6 +398,7 @@ GATES = {
     9: gate9,
     "9b": gate9b,
     "9c": gate9c,
+    11: gate11,
 }
 
 
