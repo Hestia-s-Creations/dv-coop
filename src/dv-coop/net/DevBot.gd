@@ -16,7 +16,10 @@ extends Node
 #                         release (arm off). Lines: COOP: BOT claw trial=i id=... result=granted|denied:<why>|nolock
 #                         and, while held, "COOP: BOT claw holding id=... at x,y" every second (for gates 3 and 4).
 #                         --coop-bot=claw,N,hold keeps the last rock in the claw instead of releasing it.
-# More modes (laser, massdriver) follow the same pattern.
+#   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
+#                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
+#                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
+#                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
 
 const RACE_EVERY = 3.0      # s between trials
 const RACE_LEAD = 0.6       # s between bot.go and the claim instant
@@ -26,6 +29,9 @@ const CLAW_WAIT = 6.0       # s for the arm to lock and the claim to resolve
 const CLAW_HOLD = 3.0       # s a claw trial holds its rock
 const CLAW_GAP = 2.0        # s between claw trials
 const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
+const SHOOT_TIME = 3.0
+const SHOOT_GAP = 3.0
+const SHOOT_DIST = {"laser": 600.0, "massdriver": 900.0}
 
 var net = null   # CoopNet
 
@@ -40,8 +46,14 @@ var results = {}     # member: id -> trial waiting for granted / denied
 var checks = []      # authority: [{trial, id, at (s), what}]
 var keepLast = false # claw: hold the last rock instead of releasing it
 var armFitted = false
+var fitted = null    # {slot, was}: what _fit changed in CurrentGame.state.ship, restored by _restore()
+var ammoAdded = 0.0
+var wasDived = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
+var shoot = {"state": "idle", "id": "", "until": 0.0}
+var pressed = ""     # input action held down for the current shot
+var noWeaponLogged = false
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
@@ -82,8 +94,16 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 func _physics_process(delta):
+	if net.dived:
+		wasDived = true
+	elif wasDived:
+		wasDived = false
+		_restore()   # the dive ended
 	if mode == "claw":
 		_clawTick()
+		return
+	if mode == "laser" or mode == "massdriver":
+		_shootTick()
 		return
 	if mode != "race":
 		return
@@ -177,21 +197,165 @@ func _member(now):
 			if node != null:
 				_own().untouch(node, "bot")
 
+# ---------------------------------------------------------------- laser / mass driver
+
+func _findWeapon(n):
+	for c in n.get_children():
+		if c.has_method("fire"):
+			if mode == "laser" and c.get("pulsesPerSecond") != null and c.get("ray") != null:
+				return c
+			if mode == "massdriver" and c.get("ammoWeight") != null and c.get("bullet") != null:
+				return c
+		var r = _findWeapon(c)
+		if r != null:
+			return r
+	return null
+
+var ammoGiven = false
+
+func _shootTick():
+	if mode == "massdriver":
+		_fit("SYSTEM_EMD14", "right")
+	var c = _cell()
+	if c == null or not c.inCell() or c.isAuthority():
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	var ship = net.localShip
+	if ship == null or not is_instance_valid(ship) or ship.get("cutscene") == true or now - inCellSince < SETTLE:
+		return
+	if mode == "massdriver" and not ammoGiven and ship.has_method("addAmmo"):
+		ammoGiven = true
+		ship.addAmmo(5000)
+		ammoAdded = 5000.0
+		Debug.l("COOP: BOT massdriver: +5000 kg ammo")
+	var w = _findWeapon(ship)
+	if w == null:
+		if not noWeaponLogged:
+			noWeaponLogged = true
+			Debug.l("COOP: BOT %s: no %s on this ship, idle" % [mode, mode])
+		return
+	match shoot.state:
+		"idle":
+			if trial >= trials or now < shoot.until:
+				return
+			var id = _pickTarget()
+			if id == "":
+				return
+			trial += 1
+			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME}
+			# fire the way a player does: the ship zeroes every weapon each frame unless its command input is held
+			pressed = _fireAction(ship, w)
+			if pressed != "":
+				Input.action_press(pressed)
+			Debug.l("COOP: BOT %s trial=%d id=%s firing (action %s)" % [mode, trial, id, pressed])
+		"fire":
+			var rock = _rs().nodeOf(shoot.id)
+			if rock == null or now >= shoot.until:
+				if pressed != "":
+					Input.action_release(pressed)
+					pressed = ""
+				Debug.l("COOP: BOT %s trial=%d id=%s done%s" % [mode, trial, shoot.id, "" if rock != null else " (rock gone)"])
+				shoot = {"state": "idle", "id": "", "until": now + SHOOT_GAP}
+				if trial >= trials:
+					Debug.l("COOP: BOT %s done, %d trials" % [mode, trials])
+				return
+			var dir = Vector2(0, -1).rotated(w.global_rotation)
+			var want = rock.global_position - dir * SHOOT_DIST[mode]
+			var off = want - w.global_position
+			if off.length() > 10.0:
+				ship.global_position += off
+				ship.reset_physics_interpolation()
+			ship.linear_velocity = rock.linear_velocity
+			ship.angular_velocity = 0.0
+			w.fire(1.0)   # also directly: the stock laser tick runs before the ship's next reset (seen working in m4-gate5)
+			if now >= holdLogAt:
+				holdLogAt = now + 1.0
+				var to = rock.global_position - w.global_position
+				var side = to.cross(dir)
+				var hit = w.get_world_2d().direct_space_state.intersect_ray(w.global_position, w.global_position + dir * 4000.0, ship.physicsExclude, 35)
+				var what = "nothing"
+				if hit:
+					what = "%s%s" % [hit.collider.get_meta("dvnet") if hit.collider.has_meta("dvnet") else hit.collider.name, " (target)" if hit.collider == rock else ""]
+				Debug.l("COOP: BOT %s aim id=%s along=%.0f side=%.0f ray hits %s readpower=%s energy=%.0f" % [mode, shoot.id, to.dot(dir), side, what, w.get("readpower"), ship.get("energy") if ship.get("energy") != null else -1])
+
+# The input action that fires `w`: its own command letter, or its weapon slot's.
+func _fireAction(ship, w) -> String:
+	var n = w
+	while n != null and n != ship:
+		var cmd = n.get("command")
+		if cmd is String and cmd != "" and ship.has_method("actionForEvent"):
+			return ship.actionForEvent(cmd.substr(0, 1))
+		n = n.get_parent()
+	Debug.l("COOP: BOT %s: no command letter found for %s" % [mode, w.name])
+	return ""
+
+# A rock the authority owns and streams, not held by anyone: the nearest one, preferring heavy rocks (they last).
+func _pickTarget() -> String:
+	var rs = _rs()
+	var ship = net.localShip
+	var best = ""
+	var bestD = 0.0
+	for id in rs.tracked:
+		var n = rs.tracked[id].n
+		if not is_instance_valid(n) or n.get("fracturing") == true or _own().owners.has(id) or n.mass < 300:
+			continue
+		var d = n.global_position.distance_to(ship.global_position)
+		if best == "" or d < bestD:
+			best = id
+			bestD = d
+	return best
+
 # ---------------------------------------------------------------- claw
 
 # Fit a salvage arm into the dev save's ship right after autodive loads the save, before the Game scene builds it.
 func _fitArm():
+	_fit("SYSTEM_SALVAGE_ARM", "left")
+
+# Fit `system` into a weapon slot of the dev save's ship right after autodive loads the save, before the Game
+# scene builds the ship (dev data only; the bot never runs without its flag).
+func _fit(system, prefer):
 	if armFitted or not net.autoDiveStarted:
 		return
 	armFitted = true
 	var cfg = CurrentGame.state.ship.get("config", {})
 	var ws = cfg.get("weaponSlot", {})
 	if ws.empty():
-		Debug.l("COOP: BOT claw: ship has no weapon slots in its config, cannot fit an arm")
+		Debug.l("COOP: BOT %s: ship has no weapon slots in its config, cannot fit %s" % [mode, system])
 		return
-	var slot = "left" if ws.has("left") else ws.keys()[0]
-	Debug.l("COOP: BOT claw: fitting SYSTEM_SALVAGE_ARM to weaponSlot.%s (was %s)" % [slot, ws[slot].get("type")])
-	ws[slot]["type"] = "SYSTEM_SALVAGE_ARM"
+	for k in ws:
+		if ws[k].get("type") == system:
+			Debug.l("COOP: BOT %s: %s already fitted in weaponSlot.%s" % [mode, system, k])
+			return
+	var slot = prefer if ws.has(prefer) else ws.keys()[0]
+	Debug.l("COOP: BOT %s: fitting %s to weaponSlot.%s (was %s)" % [mode, system, slot, ws[slot].get("type")])
+	fitted = {"slot": slot, "was": ws[slot].get("type")}
+	ws[slot]["type"] = system
+
+# Put the dev save's ship back as it was: the fitting lives in CurrentGame.state.ship (the live ship's shipConfig is
+# that same dict), so undo it before anything could save it. Runs when the dive ends, on quit and on exit.
+func _restore():
+	if fitted != null:
+		var ws = CurrentGame.state.ship.get("config", {}).get("weaponSlot", {})
+		if ws.has(fitted.slot):
+			ws[fitted.slot]["type"] = fitted.was
+			Debug.l("COOP: BOT restored weaponSlot.%s to %s" % [fitted.slot, fitted.was])
+		fitted = null
+	if ammoAdded > 0:
+		var ship = net.localShip
+		if ship != null and is_instance_valid(ship) and ship.has_method("drawAmmo"):
+			ship.drawAmmo(ammoAdded)
+			Debug.l("COOP: BOT took back %.0f kg ammo" % ammoAdded)
+		ammoAdded = 0.0
+
+func _notification(what):
+	if what == NOTIFICATION_WM_QUIT_REQUEST or what == NOTIFICATION_PREDELETE:
+		_restore()
+
+func _exit_tree():
+	_restore()
 
 func _arm():
 	var ship = net.localShip

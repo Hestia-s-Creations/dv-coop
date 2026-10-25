@@ -196,7 +196,168 @@ def gate9c(insts):
     return ok, ev
 
 
+# ---------------------------------------------------------------- Own track (gates 1-6, 10; tim-58)
+
+import datetime
+
+
+def _ts(line):
+    m = re.search(r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]", line)
+    return datetime.datetime.strptime(m.group(1), "%Y/%m/%d %H:%M:%S").timestamp() if m else None
+
+
+def gate1(insts):
+    """Claim race: every DevBot race trial ends with exactly one owner, and the rock back with the authority."""
+    trials = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT race trial=(\d+) id=\S+ result=(\S+)"):
+            t = trials.setdefault(int(m.group(1)), {"granted": 0, "denied": 0, "missing": 0})
+            r = m.group(2)
+            t["granted" if r == "granted" else "denied" if r.startswith("denied") else "missing"] += 1
+        for m in i.grep(r"COOP: BOT race trial=(\d+) id=\S+ after (claims|release) owner=(\d+)"):
+            t = trials.setdefault(int(m.group(1)), {"granted": 0, "denied": 0, "missing": 0})
+            t[m.group(2)] = m.group(3)
+            t["auth"] = i.peer
+    if not trials:
+        return False, ["FAIL: no race trials (run with --coop-bot=race,N on every instance)"]
+    bad = [n for n, t in trials.items()
+           if t["granted"] != 1 or t["missing"] or "claims" not in t or t.get("release") != t.get("auth")]
+    ev = ["%d trials, %d with exactly one owner and the rock returned" % (len(trials), len(trials) - len(bad))]
+    ev += ["FAIL trial %d: %s" % (n, trials[n]) for n in bad[:10]]
+    return not bad, ev
+
+
+def gate2(insts):
+    """Mid-fracture grab: the claw ends with the rock or with shards, never both, never neither."""
+    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)")]
+    if not res:
+        return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N)"]
+    bad = [r for r in res if r[2] not in ("rock", "shards")]
+    counts = {}
+    for r in res:
+        counts[r[2]] = counts.get(r[2], 0) + 1
+    return not bad, ["%d trials: %s" % (len(res), counts)] + ["FAIL %s trial %s: %s" % r for r in bad[:10]]
+
+
+def gate3(insts):
+    """Holder hard-kill: the held rock is re-owned by the authority within 2 s of the holder's last log line."""
+    ev = []
+    ok = False
+    for i in insts:
+        for line in i.lines:
+            m = re.search(r"COOP: OWN reown (\S+) from lost (\d+)", line)
+            if not m:
+                continue
+            holder = [h for h in insts if h.peer == m.group(2)]
+            last = _ts(holder[0].lines[-1]) if holder and holder[0].lines else None
+            dt = _ts(line) - last if last else None
+            good = dt is not None and dt <= 2.0
+            ok = ok or good
+            ev.append("%s re-owned %s from %s, %s s after the holder's last log line%s" % (
+                i.name(), m.group(1), m.group(2), "?" if dt is None else "%.0f" % dt, "" if good else "  FAIL (>2 s)"))
+    if not ev:
+        ev.append("FAIL: no re-own (hard-kill a member holding a rock: --coop-bot=claw,1,hold)")
+    return ok, ev
+
+
+def gate4(insts):
+    """Handoff while holding: the new authority adopts the member's held rock and the member keeps holding it."""
+    ev = []
+    ok = False
+    for i in insts:
+        if not i.count(r"COOP: CELL PROMOTED"):
+            continue
+        for line in i.lines:
+            m = re.search(r"COOP: OWN o\.list adopts (\S+) owned by (\d+)", line)
+            if not m:
+                continue
+            t = _ts(line)
+            holder = [h for h in insts if h.peer == m.group(2)]
+            rx = re.compile(r"BOT claw holding id=%s .*mine=True" % re.escape(m.group(1)))
+            held = [l for l in (holder[0].lines if holder else []) if rx.search(l) and _ts(l) and _ts(l) >= t]
+            good = len(held) > 0
+            ok = ok or good
+            ev.append("%s adopted %s held by %s; holder's 'mine=True' lines after that: %d%s" % (
+                i.name(), m.group(1), m.group(2), len(held), "" if good else "  FAIL"))
+    if not ev:
+        ev.append("FAIL: no o.list adoption after a promotion (quit the authority while a member holds a rock)")
+    return ok, ev
+
+
+def _dmg(insts):
+    rows = []
+    rx = r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
+    for i in insts:
+        for m in i.grep(rx):
+            rows.append((i.name(),) + m.groups())
+    return rows
+
+
+def gate5(insts):
+    """Beams: every beam hit a shooter forwards is applied once, on the rock's owner, and never on a copy."""
+    fwd = {}
+    app = {}
+    copy_applied = []
+    for r in _dmg(insts):
+        _, rid, owner, here, fn, fe, an, ae = r[:8]
+        f = fwd.setdefault(rid, [0, 0.0])
+        a = app.setdefault(rid, [0, 0.0])
+        f[0] += int(fn)
+        f[1] += float(fe)
+        a[0] += int(an)
+        a[1] += float(ae)
+        if here == "copy" and int(an):
+            copy_applied.append(r)
+    ids = sorted(k for k in fwd if fwd[k][0] or app[k][0])
+    if not ids:
+        return False, ["FAIL: no forwarded beam hits (run with --coop-bot=laser,N)"]
+    bad = [k for k in ids if fwd[k][0] != app[k][0] or abs(fwd[k][1] - app[k][1]) > 1.0]
+    ev = ["%d rocks hit; forwarded = applied on %d" % (len(ids), len(ids) - len(bad))]
+    ev += ["%s: forwarded %d/%.0f, applied %d/%.0f%s" % (k, fwd[k][0], fwd[k][1], app[k][0], app[k][1], "  FAIL" if k in bad else "")
+           for k in ids[:12]]
+    ev += ["FAIL applied on a copy: %s" % (r,) for r in copy_applied[:5]]
+    return not bad and not copy_applied, ev
+
+
+def gate6(insts):
+    """Bullets: bullet contacts damage a rock only on its owner; every other machine's copy takes effects only."""
+    rows = _dmg(insts)
+    applied_owned = sum(int(r[8]) for r in rows if r[3] == "owned")
+    applied_copy = [r for r in rows if r[3] == "copy" and int(r[8])]
+    fx = sum(int(r[9]) for r in rows)
+    shots = sum(i.count(r"COOP: BOT massdriver trial=\d+ id=\S+ firing") for i in insts)
+    ev = ["mass driver trials %d; bullet contacts applied on owners %d, suppressed on copies %d" % (shots, applied_owned, fx)]
+    ev += ["FAIL applied on a copy: %s" % (r,) for r in applied_copy[:5]]
+    if applied_owned == 0:
+        ev.append("FAIL: no bullet contact applied anywhere (run with --coop-bot=massdriver,N)")
+    return applied_owned > 0 and not applied_copy, ev
+
+
+def gate10(insts):
+    """Ore audit: every conservation line balances (born - gone = live) and every rock is eaten at most once."""
+    lines = [(i.name(), m.group(0)) for i in insts for m in i.grep(r"COOP: OWN conserve .*")]
+    if not lines:
+        return False, ["FAIL: no conservation lines (the authority logs one every 30 s)"]
+    bad = [l for l in lines if "MISMATCH" in l[1]]
+    eaten = {}
+    for i in insts:
+        for m in i.grep(r"COOP: OWN eaten (\S+)"):
+            eaten[m.group(1)] = eaten.get(m.group(1), 0) + 1
+    twice = [k for k, n in eaten.items() if n > 1]
+    ev = ["%d conservation lines, %d mismatched; last: %s" % (len(lines), len(bad), lines[-1][1][:170])]
+    ev.append("rocks eaten: %d, none twice: %s" % (len(eaten), not twice))
+    ev += ["FAIL %s: %s" % l for l in bad[:5]] + ["FAIL eaten twice: %s" % k for k in twice[:5]]
+    return not bad and not twice, ev
+
+
 GATES = {
+    1: gate1,
+    2: gate2,
+    3: gate3,
+    4: gate4,
+    5: gate5,
+    6: gate6,
+    10: gate10,
     7: gate7,
     8: gate8,
     9: gate9,

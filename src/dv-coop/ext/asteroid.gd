@@ -47,9 +47,20 @@ func applyKineticDamage(energy, point, delta = null):
 	.applyKineticDamage(energy, point, delta)
 
 func addIntegratedDamage(source: RigidBody2D, energy: float, pt: Vector2):
+	var bullet = source != null and is_instance_valid(source) and source.filename.begins_with("res://weapons/projectiles/")
 	if _fxOnly():
+		if bullet:
+			_stat("bul_fx")
 		return
+	if bullet:
+		_stat("bul_app")
 	.addIntegratedDamage(source, energy, pt)
+
+func _stat(key):
+	if has_meta("dvnet") and ModLoader.has_meta("dvcoop"):
+		var own = ModLoader.get_meta("dvcoop").get_node_or_null("Own")
+		if own != null:
+			own.stat(get_meta("dvnet"), key)
 
 func applyEmpDamage(energy, point, delta):
 	if _fxOnly():
