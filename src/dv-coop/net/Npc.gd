@@ -73,6 +73,17 @@ func _ready():
 	net.on("n.d", self, "_onNpcGone")
 	net.on("d.ship", self, "_onShipHits")
 	call_deferred("_hookCell")
+	for arg in OS.get_cmdline_args():
+		if arg.begins_with("--coop-dev-explode="):
+			explodeAfter = float(arg.substr(19))
+		elif arg.begins_with("--coop-dev-pirate="):
+			pirateAfter = float(arg.substr(18))
+		elif arg.begins_with("--coop-dev-shoot="):
+			shootAfter = float(arg.substr(17))
+		elif arg == "--coop-dev-story-npc":
+			storyNpc = true
+		elif arg.begins_with("--coop-dev-fireall="):
+			fireAfter = float(arg.substr(19))
 
 func _hookCell():
 	var cell = net.get_node_or_null("Cell")
@@ -110,17 +121,6 @@ func _onCellJoined(authority_id):
 			freed.append(c.transponder)
 			field.kill(c)
 	_log("joined %s's cell: freed %d NPCs of mine %s, kept %d as mine %s" % [authority_id, freed.size(), freed, kept.size(), kept])
-	for arg in OS.get_cmdline_args():
-		if arg.begins_with("--coop-dev-explode="):
-			explodeAfter = float(arg.substr(19))
-		elif arg.begins_with("--coop-dev-pirate="):
-			pirateAfter = float(arg.substr(18))
-		elif arg.begins_with("--coop-dev-shoot="):
-			shootAfter = float(arg.substr(17))
-		elif arg == "--coop-dev-story-npc":
-			storyNpc = true
-		elif arg.begins_with("--coop-dev-fireall="):
-			fireAfter = float(arg.substr(19))
 
 func _log(s):
 	Debug.l("COOP: NPC " + s)
@@ -155,31 +155,39 @@ func _onDie(from, msg):
 	_log("s.die from %s: puppet '%s' has no reactor to explode" % [from, pp.name])
 
 func _physics_process(delta):
+	devLogAccum += delta
+	var trace = devLogAccum >= 10.0 and (explodeAfter >= 0 or pirateAfter >= 0 or fireAfter >= 0)
+	if trace:
+		devLogAccum = 0.0
+		var sh = net.localShip
+		var ok = sh != null and is_instance_valid(sh)
+		_log("dev state: ship=%s cutscene=%s clocks fire=%.0f explode=%.0f pirate=%.0f" % [sh.name if ok else "-", str(sh.cutscene) if ok else "-", fireClock, explodeClock, pirateClock])
+	devStep = 0
 	_pruneMirrors()
+	devStep = 1
 	_podsTick()
+	devStep = 2
 	_npcTick(delta)
+	devStep = 3
 	_flushHits()
+	devStep = 4
 	_devExplodeTick(delta)
 	_devPirateTick(delta)
 	_devShootTick(delta)
 	_devFireTick(delta)
 	_devStoryTick()
-	devLogAccum += delta
-	if devLogAccum >= 10.0 and (explodeAfter >= 0 or pirateAfter >= 0 or fireAfter >= 0):
-		devLogAccum = 0.0
-		var sh = net.localShip
-		var ok = sh != null and is_instance_valid(sh)
-		var c = _cell()
-		_log("dev state: ship=%s cutscene=%s setup=%s clocks fire=%.0f explode=%.0f pirate=%.0f cell=%s auth=%s members=%s" % [
-			sh.name if ok else "-", sh.cutscene if ok else "-", sh.get("setup") if ok else "-", fireClock, explodeClock, pirateClock,
-			c.inCell() if c else "-", c.isAuthority() if c else "-", c.members() if c else "-"])
+	devStep = 5
+	if trace:
+		_log("dev trace: reached step %d" % devStep)
 	countAccum += delta
 	if countAccum >= 5.0:
 		countAccum = 0.0
 		if counts.size() > 0:
-			_log("ships 5 s: %s, mirrors=%d npcs=%d pods=%d" % [counts, mirrors.size(), npcs.size(), pods.size()])
+			_log("ships 5 s: %s, mirrors=%d npcs=%d pods=%d step=%d" % [counts, mirrors.size(), npcs.size(), pods.size(), devStep])
 		counts = {}
 		_saveWatch()
+
+var devStep = -1
 
 # Dev evidence for "nothing written to the viewer's save": sizes of the per-ship save tables, logged when they change.
 var lastSave = ""

@@ -26,7 +26,7 @@ cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ex
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
 a3d68d52c2c3ee15bc5ec84b5a741a1fb94f604fb2f7e268f73c30491aba8e87  src/dv-coop/net/DevBot.gd
-34f4f3d5bbcbd6168a53a6aff0dcf40911e8433dcd5749d53ebd84a3ca66b7f4  src/dv-coop/net/Npc.gd
+711f285ca2a981573b0dde30da4713ae3c2a49450a1f26186bf686f9b812b377  src/dv-coop/net/Npc.gd
 254dbd800c422a884e328b9dd4c78631f67a7f00de318180f36ea3d72da43c2e  src/dv-coop/net/Own.gd
 c2af8ed2bf2f75634197b9fcc2cbdccd6b8e5be7ce43d543e04ea8a1ea2cd535  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
