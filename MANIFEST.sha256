@@ -27,7 +27,7 @@ cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ex
 932133c1a1a457e979a9e01ee9b96a5417e4f7ef09d62f6697c00b74dcf51d8c  src/dv-coop/modmain.gd
 f2b3dc17e2827e813fdd92de428f075bcb464fbc54b320c5adb9004d2ad722f4  src/dv-coop/net/Cell.gd
 9e89c943ebccce3a39713ed5b7f52d38ada903578c2fc518b40c43213ce29e5a  src/dv-coop/net/CoopNet.gd
-c73ca9b9f3837b7f4bffa65562c6dc7db802190e338ce061b9ea81462de5281d  src/dv-coop/net/DevBot.gd
+1d0e8e14af72dd86721650d5b7b5f1b1434515bb92d8095847152869adf1f8ec  src/dv-coop/net/DevBot.gd
 19fc7418773e663874b01df2b1713ff9ab2f7e62e55296f8b16e92fd04b28d28  src/dv-coop/net/Npc.gd
 7cdb82c96564ef7c588426d6aadd4a5cf56a798a42bd273d9801e7afe4f638aa  src/dv-coop/net/Own.gd
 e5b09fe004e696fd70ec4e2663a4f527cd2be89978bcf76e3be43ca347c0fb9e  src/dv-coop/net/RockSync.gd

@@ -235,6 +235,7 @@ func _fracCoordinate(c, now):
 			else:
 				n.totalEnergy = n.splitEnergyThreshold * 1.5
 				n.set_physics_process(true)
+				n.set_process(true)   # fractureTime counts down in _process; the stock damage path wakes both
 				Debug.l("COOP: BOT frac trial=%d id=%s fracture set" % [f.trial, f.id])
 	if trial >= trials or now - inCellSince < SETTLE or now < nextAt:
 		return
