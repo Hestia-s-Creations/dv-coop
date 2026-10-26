@@ -16,12 +16,10 @@ class Instance:
     def __init__(self, path):
         self.path = path
         self.lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
-        self.peer = None
-        for line in self.lines:
-            m = re.search(r"COOP: ENet connected to server, I am (\d+)", line) or re.search(r"Steam ready, I am (\d+)", line)
-            if m:
-                self.peer = m.group(1)
-                break
+        # the ENet id when there is one: every dev instance also logs "Steam ready" with the same shared Steam id
+        enet = [m.group(1) for m in (re.search(r"COOP: ENet connected to server, I am (\d+)", l) for l in self.lines) if m]
+        steam = [m.group(1) for m in (re.search(r"Steam ready, I am (\d+)", l) for l in self.lines) if m]
+        self.peer = (enet or steam or [None])[0]
 
     def grep(self, pattern):
         rx = re.compile(pattern)

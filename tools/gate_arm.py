@@ -97,6 +97,8 @@ def stop(label, gates):
         log("no kept logs from stop.sh; can't score")
         return False
     run = m.group(1)
+    if WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
+        run = run[1].upper() + ":" + run[2:]
     r = subprocess.run([sys.executable, "tools/gate_m4.py", "--gates", gates] + glob.glob(os.path.join(run, "*", "dV", "logs", "dv_log_*.txt")), cwd=ROOT)
     return r.returncode == 0
 
