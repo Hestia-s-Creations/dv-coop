@@ -159,23 +159,58 @@ KILLS = []    # [(peer id, wall ms just before the kill)] in this run; stop() wr
 SCORES = {}   # gate -> passed, from the last stop()
 
 
+HEALTH = []   # every run's ship/save failures (ship_health); any of them fails the whole gate_arm / m4_final run
+
+
+def ship_health(run, savecheck, label):
+    """Run 081334: a bot ship went dry (helpless), the stock rescue tow docked it home and saved its seeded slot. Any
+    "COOP: BOT ship ... helpless=True" or "COOP: BOT ship draining" line is a FAIL, and so is a savecheck diff (M4
+    phases never save); the changed saves are copied next to the kept logs before the next launch reseeds them.
+    Returns the failures (also appended to HEALTH)."""
+    bad = []
+    for f in sorted(glob.glob(os.path.join(run, "*", "dV", "logs", "dv_log_*.txt")) if run else []):
+        inst = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(f))))
+        for ln in open(f, encoding="utf-8", errors="replace"):
+            if "COOP: BOT ship draining" in ln or re.search(r"COOP: BOT ship remass=.* helpless=True", ln):
+                bad.append("%s: %s" % (inst, ln.strip()))
+                break
+    if "savecheck: PASS" not in savecheck:
+        changed = re.findall(r"^\s+(\S+\.dv)\s+\S+ -> \S+", savecheck, re.M)
+        bad.append("savecheck: %s" % (", ".join(changed) or "output not understood"))
+        if run:
+            keep = os.path.join(run, "saves-changed")
+            os.makedirs(keep, exist_ok=True)
+            for c in changed:
+                if WIN and re.match(r"^/([a-zA-Z])/", c):
+                    c = c[1].upper() + ":" + c[2:]
+                if os.path.exists(c):
+                    shutil.copy(c, os.path.join(keep, os.path.basename(os.path.dirname(os.path.dirname(c)))
+                                                + "_" + os.path.basename(c)))
+    for b in bad:
+        log("FAIL ship/save health (%s): %s" % (label, b))
+    HEALTH.extend(bad)
+    return bad
+
+
 def stop(label, gates):
-    """Close the run, keep its logs (with kills.txt), and score each gate on its own; True when all of them pass."""
+    """Close the run, keep its logs (with kills.txt), and score each gate on its own; True when all of them pass and
+    the ships and saves are healthy (ship_health)."""
     out = sh(["tools/stop.sh"], check=False)
     log("send the lead: windows closed for gate %s" % label)
-    sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
+    sc = sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
     kills = list(KILLS)
     del KILLS[:]
     SCORES.clear()
+    m = re.search(r"logs kept in (\S+)", out)
+    run = m.group(1) if m else None
+    if run and WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
+        run = run[1].upper() + ":" + run[2:]
+    healthy = not ship_health(run, sc, label)
     if not gates:
         return False
-    m = re.search(r"logs kept in (\S+)", out)
-    if not m:
+    if not run:
         log("no kept logs from stop.sh; can't score")
         return False
-    run = m.group(1)
-    if WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
-        run = run[1].upper() + ":" + run[2:]
     if kills:
         # gate 3 measures kill -> reown from these (the game logs whole seconds; Own's reown line carries wall ms)
         with open(os.path.join(run, "kills.txt"), "w") as f:
@@ -185,7 +220,7 @@ def stop(label, gates):
     for g in gates.split(","):
         r = subprocess.run([sys.executable, "tools/gate_m4.py", "--gates", g] + logs, cwd=ROOT)
         SCORES[g] = r.returncode == 0
-    return all(SCORES.values())
+    return all(SCORES.values()) and healthy
 
 
 def wait_for(cond, limit, every=5):
@@ -375,6 +410,7 @@ def main(argv):
             res["4"] = bool(got["4"])
         elif p == "10":
             res["10r"] = phase10()
+    res["ship/save health"] = not HEALTH
     log("summary: %s" % res)
     return 0 if all(v in (True, "ok") for v in res.values()) else 1
 

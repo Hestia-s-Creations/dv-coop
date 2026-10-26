@@ -165,24 +165,97 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 # Read-only evidence for a bot ship running dry (helpless: no remass -> the stock rescue tow docks it home, which
-# saves the slot): every SHIP_LOG_EVERY s, "COOP: BOT ship remass=kg/max cap=.. drones=kg/max cutscene=..".
+# saves the slot): every SHIP_LOG_EVERY s, "COOP: BOT ship remass=kg/max cap=.. drones=kg/max helpless=.. cutscene=..
+# rate=kg/s leak=.. reactorT=K impacts=n maxImpact=..". A bot ship never fires its engines (it is teleported), so it
+# burns ~0.5 kg/s (turbine 0.1 kg/s + attitude); every engine of a TRTL at full burn is ~157 kg/s (K37 main 7500 and
+# 8 K37 RCS 2000 at Isp 15: thrust / (Isp * 10) kg/s each). More than that is the stock nuclear reactor leaking (up to
+# 500 kg/s above 1000 K once its leak damage is past 25%; every frame at full damage), and on a player ship only impacts
+# crack it (Reactor._on_impact): run 081334, B drained 530 kg/s for 60 s from 08:11:24 (while it seeded and reached),
+# went helpless and was towed home, which saved its slot; the 063348 escape left the arm save at leak 9600/9600, and
+# every run on it drained the same 530 kg/s from the load.
+# Past DRAIN_KG_S the bot stops ("COOP: BOT ship draining"; the gates fail on it and on helpless=True).
 const SHIP_LOG_EVERY = 10.0
+const DRAIN_KG_S = 100.0
 var shipLogAt = 0.0
+var shipLogMass = -1.0   # remass at the last line, out of a cutscene (-1: none yet)
+var impactShip = null
+var impacts = 0
+var impactMax = 0.0
+var impactLogged = 0     # impacts already in an "impact" line
+var impactLogAt = 0.0
+var drained = false
+
+func _onImpact(power, _point, _delta):
+	impacts += 1
+	impactMax = max(impactMax, power)
+
+func _leak(ship) -> float:
+	var r = ship.get_node_or_null("reactor")
+	return r.getCondition("leak") if r != null and r.has_method("getCondition") else -1.0
 
 func _shipLog():
 	var now = _secs()
 	var ship = net.localShip if net != null else null
-	if now < shipLogAt or ship == null or not is_instance_valid(ship):
+	if ship == null or not is_instance_valid(ship):
 		return
+	if impactShip != ship and ship.has_signal("damageImpact"):
+		impactShip = ship
+		ship.connect("damageImpact", self, "_onImpact")
+	if impacts > impactLogged and now >= impactLogAt:
+		impactLogAt = now + 1.0
+		Debug.l("COOP: BOT ship impact n=%d max=%.0f leak=%.3f" % [impacts - impactLogged, impactMax, _leak(ship)])
+		impactLogged = impacts
+	if now < shipLogAt:
+		return
+	var rm = float(ship.get("reactiveMass"))
+	var rate = (shipLogMass - rm) / (now - shipLogAt + SHIP_LOG_EVERY) if shipLogMass >= 0 else 0.0
+	shipLogMass = rm if ship.get("cutscene") != true else -1.0
 	shipLogAt = now + SHIP_LOG_EVERY
-	Debug.l("COOP: BOT ship remass=%.0f/%.0f cap=%.0f drones=%.1f/%.1f helpless=%s cutscene=%s" % [ship.get("reactiveMass"),
-		ship.get("reactiveMassMax"), ship.get("capacitor"), ship.get("droneParts"), ship.get("dronePartsMax"),
-		ship.isHelpless() if ship.has_method("isHelpless") else "?", ship.get("cutscene")])
+	var r = ship.get_node_or_null("reactor")
+	Debug.l("COOP: BOT ship remass=%.0f/%.0f cap=%.0f drones=%.1f/%.1f helpless=%s cutscene=%s rate=%.1f leak=%.3f reactorT=%.0f impacts=%d maxImpact=%.0f" % [
+		rm, ship.get("reactiveMassMax"), ship.get("capacitor"), ship.get("droneParts"), ship.get("dronePartsMax"),
+		ship.isHelpless() if ship.has_method("isHelpless") else "?", ship.get("cutscene"), rate, _leak(ship),
+		r.get("temperature") if r != null and r.get("temperature") != null else -1.0, impacts, impactMax])
+	if rate > DRAIN_KG_S and not drained:
+		drained = true
+		Debug.l("COOP: BOT ship draining %.0f kg/s (leak=%.3f impacts=%d maxImpact=%.0f): the bot stops" % [rate,
+			_leak(ship), impacts, impactMax])
+
+# Is the spot a teleport would put the ship on free of other bodies? Landing on a rock is an impact (see DRAIN_KG_S).
+# A blocked target is passed over for SPOT_RETRY s.
+const SPOT_RADIUS = 250.0
+const SPOT_RETRY = 5.0
+var spotBlocked = {}   # id -> s until it may be picked again
+
+func _spotClear(ship, pos, id, rock) -> bool:
+	var now = _secs()
+	if spotBlocked.get(id, 0.0) > now:
+		return false
+	var q = Physics2DShapeQueryParameters.new()
+	var c = CircleShape2D.new()
+	c.radius = SPOT_RADIUS
+	q.set_shape(c)
+	q.transform = Transform2D(0.0, pos)
+	q.collision_layer = ship.collision_mask
+	var ex = [ship, rock]   # and the ship's own attached bodies and cargo
+	for k in ["physicsExclude", "cargo", "temporaryCargo"]:
+		if ship.get(k) is Array:
+			ex += ship.get(k)
+	q.exclude = ex
+	for h in ship.get_world_2d().direct_space_state.intersect_shape(q, 16):
+		var o = h.get("collider")
+		if o != null and is_instance_valid(o) and not ex.has(o) and not ship.is_a_parent_of(o):
+			spotBlocked[id] = now + SPOT_RETRY
+			Debug.l("COOP: BOT teleport for id=%s blocked by %s, passed over %.0f s" % [id, o.name, SPOT_RETRY])
+			return false
+	return true
 
 func _physics_process(delta):
 	_fitArm()
 	if mode != "":
 		_shipLog()
+	if drained:
+		return
 	if not seedWatch.empty():
 		_seedWatchTick(_secs())
 	if mode == "claw":
@@ -925,7 +998,7 @@ func _seedMinerals(ship, now):
 				or n.get("fracturing") == true or own.owners.has(id):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if d < 8000.0 and (best == "" or d < bestD):
+		if d < BOT_REACH and (best == "" or d < bestD) and spotBlocked.get(id, 0.0) <= now:
 			best = id
 			bestD = d
 	if best == "":
@@ -933,6 +1006,8 @@ func _seedMinerals(ship, now):
 	var rock = rs.nodeOf(best)
 	if bestD > SEED_NEAR * 1.5:
 		var away = (ship.global_position - rock.global_position).normalized()
+		if not _spotClear(ship, rock.global_position + away * SEED_NEAR, best, rock):
+			return
 		ship.global_position = rock.global_position + away * SEED_NEAR
 		ship.linear_velocity = _shipVel(rock.linear_velocity)
 		ship.reset_physics_interpolation()
@@ -974,6 +1049,9 @@ func _armTakes(arm, ship, n) -> bool:
 # to Enceladus (a dive end and a save) when a player ship goes over 2000 px/s for escapeTime, and a fresh shard can be
 # that fast (run 063348: A matched one and flew home). The teleport keeps the ship on the target anyway.
 const SHIP_MAX_V = 1000.0
+# How far the claw and the seeding look for a rock (px). Run 081334: an uncapped pick (a rock identified down to its
+# value anywhere in the tracked set) teleported B 9.4k px.
+const BOT_REACH = 3000.0
 func _shipVel(v: Vector2) -> Vector2:
 	return v.clamped(SHIP_MAX_V)
 
@@ -1347,10 +1425,17 @@ func _pickClawRock(ship) -> String:
 		if bestFinal and not isFinal:
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
+		if d > BOT_REACH or spotBlocked.get(id, 0.0) > _secs():
+			continue
 		if best == "" or d < bestD or (isFinal and not bestFinal):
 			best = id
 			bestD = d
 			bestFinal = isFinal
+	var area = arm.get("areaDockArea") if arm != null else null
+	if best != "" and area != null:
+		var rock = rs.nodeOf(best)
+		if not _spotClear(ship, ship.global_position + rock.global_position - area.global_position, best, rock):
+			return ""
 	return best
 
 func _onGranted(id):
