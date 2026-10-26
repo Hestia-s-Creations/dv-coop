@@ -141,6 +141,8 @@ func _secs() -> float:
 
 func _physics_process(delta):
 	_fitArm()
+	if not seedWatch.empty():
+		_seedWatchTick(_secs())
 	if mode == "claw":
 		_clawTick()
 		return
@@ -544,7 +546,8 @@ func _fracCoordinate(c, now):
 			elif _own().owners.has(f.id):
 				Debug.l("COOP: BOT frac trial=%d id=%s fracture skipped (owned by %s)" % [f.trial, f.id, _own().owners[f.id]])
 			else:
-				n.totalEnergy = n.splitEnergyThreshold * 1.5
+				# with real arms (salvage arms take minerals only) push past 2x: class-4 parents shed class-5 shards
+				n.totalEnergy = n.splitEnergyThreshold * (1.5 if noArm else SEED_ENERGY)
 				n.set_physics_process(true)
 				n.set_process(true)   # fractureTime counts down in _process; the stock damage path wakes both
 				fracWatch.append({"trial": f.trial, "id": f.id, "pos": n.global_position, "until": now + 3.5, "n": 0})
@@ -692,12 +695,18 @@ func _fracMember(now):
 			if now > frac.until:
 				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes" % [frac.seen.size(), frac.takeable.size()])
 
-# Make mineral rocks the way a player does: break a class-4 rock (the ring spawns no minerals; class-4 fracture
-# shards are class 5, the vein's mineral). As a member, claim the nearest class-4 rock and, once it is ours, push it
-# past its split threshold: our stock fracture spawns the shards and Own hands them to the authority (o.new).
-#   COOP: BOT seed id=... claimed / fractured / gave up
+# Make mineral rocks the way a player does: break a class-4 rock next to the ship (the ring spawns no minerals). A
+# class-4 rock broken with more than twice its split energy obliterates one class down (asteroid.gd: e = totalEnergy/2
+# halving past the threshold), so its shards are class 5: the vein's mineral. As a member: fly to within SEED_NEAR of
+# the nearest class-4 rock, claim it and, once it is ours, push it to SEED_ENERGY x its split threshold; our stock
+# fracture spawns the shards and Own hands them to the authority (o.new).
+#   COOP: BOT seed id=... claimed (<px> away) / fractured / gave up
+#   COOP: BOT seed id=... parent after <s>: fracturing=.. fractureTime=.. splitsTo=.. processing=.. inSimRange=..
 const SEED_EVERY = 6.0
+const SEED_NEAR = 800.0      # px from the ship to the rock it breaks (members break only what their systems hold)
+const SEED_ENERGY = 3.0      # x splitEnergyThreshold: > 2 obliterates one class, so class-4 rocks shed minerals
 var seedJob = {"id": "", "until": 0.0, "next": 0.0}
+var seedWatch = []           # [{node, id, at (s), checks: [s after the push]}]
 
 func _seedMinerals(ship, now):
 	var rs = _rs()
@@ -707,10 +716,11 @@ func _seedMinerals(ship, now):
 		if n == null or n.get("fracturing") == true:
 			seedJob.id = ""
 		elif own.mine.has(seedJob.id):
-			n.totalEnergy = n.splitEnergyThreshold * 1.5
+			n.totalEnergy = n.splitEnergyThreshold * SEED_ENERGY
 			n.set_physics_process(true)
 			n.set_process(true)
 			Debug.l("COOP: BOT seed id=%s fractured" % seedJob.id)
+			seedWatch.append({"node": n, "id": seedJob.id, "at": now, "checks": [0.3, 1.0, 2.5]})
 			seedJob.id = ""
 		elif now > seedJob.until:
 			Debug.l("COOP: BOT seed id=%s gave up (not granted)" % seedJob.id)
@@ -728,15 +738,39 @@ func _seedMinerals(ship, now):
 				or n.get("fracturing") == true or own.owners.has(id):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if d < 6000.0 and (best == "" or d < bestD):
+		if d < 8000.0 and (best == "" or d < bestD):
 			best = id
 			bestD = d
 	if best == "":
 		return
+	var rock = rs.nodeOf(best)
+	if bestD > SEED_NEAR * 1.5:
+		var away = (ship.global_position - rock.global_position).normalized()
+		ship.global_position = rock.global_position + away * SEED_NEAR
+		ship.linear_velocity = rock.linear_velocity
+		ship.reset_physics_interpolation()
 	seedJob.id = best
 	seedJob.until = now + 3.0
-	Debug.l("COOP: BOT seed id=%s claimed (%.0f px away)" % [best, bestD])
-	own.touch(rs.nodeOf(best), "seed")   # the grant shows up as own.mine on a later tick
+	Debug.l("COOP: BOT seed id=%s claimed (%.0f px away)" % [best, rock.global_position.distance_to(ship.global_position)])
+	own.touch(rock, "seed")   # the grant shows up as own.mine on a later tick
+
+# Evidence for "no shards": the parent's stock fracture state shortly after the push.
+func _seedWatchTick(now):
+	for w in seedWatch.duplicate():
+		if w.checks.empty():
+			seedWatch.erase(w)
+			continue
+		if now - w.at < w.checks[0]:
+			continue
+		var after = w.checks.pop_front()
+		var n = w.node
+		if not is_instance_valid(n):
+			Debug.l("COOP: BOT seed id=%s parent after %.1f s: gone" % [w.id, after])
+			seedWatch.erase(w)
+			continue
+		Debug.l("COOP: BOT seed id=%s parent after %.1f s: fracturing=%s fractureTime=%.2f splitsTo=%s doSplit=%s obliterating=%s processing=%s physics=%s field=%s inSimRange=%s" % [
+			w.id, after, n.get("fracturing"), n.get("fractureTime"), n.get("splitsTo"), n.get("doSplit"), n.get("obliterating"),
+			n.is_processing(), n.is_physics_processing(), n.get("field") != null, CurrentGame.isInSimulatiorRange(n.global_position)])
 
 # Would the stock arm take this rock? A salvage arm (pickupOnlyMineralTargets) only locks rocks the ship's own
 # mineral filter passes (ship.isValidMineralTarget with the arm's saved config: minerals, min value, albedo); read only.

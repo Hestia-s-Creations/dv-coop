@@ -15,6 +15,12 @@ extends "res://AsteroidSpawner.gd"
 # authority decides when rocks go (r.d).
 
 var coopShard = false   # inside a fracture-shard spawn on a cell member
+var coopShardRefused = false
+# member shard requests since the last line: COOP: RS member shards: tries=.. ok=.. despawn=.. blocked=.. none=..
+# (despawn: refused by the placement radius; blocked: the stock overlap test, retried next frame; none: the class-5
+# table picked no rock for this spot's chaos, a stock "no shard")
+var coopShardStats = {"tries": 0, "ok": 0, "despawn": 0, "blocked": 0, "none": 0}
+var coopShardLogAt = 0
 
 func _coopMember() -> bool:
 	if not ModLoader.has_meta("dvcoop"):
@@ -31,7 +37,25 @@ func despawn(body):
 
 func spawnAsteroidByClass(oc, spot, chaos, spawnPointRandomness = 0.0, initialLinearVelocity = Vector2(0, 0), initialAngularVelocity = 0.0, tries = 1, spawned = true):
 	coopShard = not spawned and not spawnThings and _coopMember()
+	coopShardRefused = false
 	var r = .spawnAsteroidByClass(oc, spot, chaos, spawnPointRandomness, initialLinearVelocity, initialAngularVelocity, tries, spawned)
+	if coopShard:
+		coopShardStats.tries += 1
+		if r is Dictionary:
+			coopShardStats.none += 1
+		elif r != null:
+			coopShardStats.ok += 1
+		elif coopShardRefused:
+			coopShardStats.despawn += 1
+		else:
+			coopShardStats.blocked += 1
+		var t = OS.get_ticks_msec()
+		if t >= coopShardLogAt:
+			coopShardLogAt = t + 5000
+			Debug.l("COOP: RS member shards: tries=%d ok=%d despawn=%d blocked=%d none=%d" % [coopShardStats.tries,
+				coopShardStats.ok, coopShardStats.despawn, coopShardStats.blocked, coopShardStats.none])
+			for k in coopShardStats:
+				coopShardStats[k] = 0
 	coopShard = false
 	return r
 
@@ -40,7 +64,8 @@ func isInDespawnRadius(pos: Vector2, asteroid: bool) -> bool:
 		var test = focusObject.global_position
 		Tool.release(focusObject)
 		var running = range_lerp(sqrt(clamp(getThrottleFactor(), 0.05, 1)), 1, 0, despawnRadiusAsteroids, despawnRadiusAsteroidsLoad)
-		return isInDespawnCell(test, pos, running)
+		coopShardRefused = isInDespawnCell(test, pos, running)
+		return coopShardRefused
 	return .isInDespawnRadius(pos, asteroid)
 
 func slipstream():
