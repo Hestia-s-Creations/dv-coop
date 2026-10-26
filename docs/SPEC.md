@@ -150,7 +150,7 @@ dv-coop.zip
     ui/Lobby.tscn           # host / join panel on the title screen and pause layer
 ```
 
-**Script extension rule.** Each `ext/*.gd` file starts with `extends "res://<original path>"`, overrides only the functions named in the seams table, and calls the parent with `.function()` for everything else. `ModLoader.installScriptExtension` then takes over the original path, so every scene that instances the original script gets the subclass. Overriding `_process` or `_physics_process` must call the parent version explicitly or the ship stops working.
+**Script extension rule.** Each `ext/*.gd` file starts with `extends "res://<original path>"`, overrides only the functions named in the seams table, and calls the parent with `.function()` where an override needs the stock behavior. `ModLoader.installScriptExtension` then takes over the original path, so every scene that instances the original script gets the subclass. Engine callbacks are the exception: Godot 3 already runs `_ready`, `_process`, `_physics_process`, `_enter_tree`, `_exit_tree`, `_input` and `_notification` on every level of the script chain, so an override of one of them must **not** call `.`-the-same-callback, or the game's code runs twice (it did from M1 to M4; `tools/verify.py` rejects it). An ext script never defines `_init`: `installScriptExtension` instances it once and leaks that instance.
 
 **Transport layer.** `CoopNet` wraps GodotSteam's `createLobby`, `joinLobby`, `sendP2PPacket`, `readP2PPacket` and the `lobby_created`, `lobby_joined`, `p2p_session_request` signals. A `--coop-enet=<host:port>` command-line flag swaps in `NetworkedMultiplayerENet` so two instances on one PC can test without two Steam accounts.
 
