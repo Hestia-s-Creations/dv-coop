@@ -832,7 +832,11 @@ func _onRockBorn(id, node):
 	if role == "authority":
 		cons.born += 1
 	elif role == "member" and not node.has_meta("dvnet_tracked"):
-		born.append(id)   # only fracture spawns rocks on a member (its spawner is suspended)
+		# only fracture spawns rocks on a member, while its spawner is suspended; a running spawner (the cell is
+		# being left and Cell resumed it before our role changed) makes ordinary rocks that stay ours
+		var f = _rs().field
+		if f == null or not is_instance_valid(f) or f.get("spawnThings") != true:
+			born.append(id)
 
 const DISABLED_LAYER = 2147483648   # the MPU sets this collision layer on a rock just before freeing it
 

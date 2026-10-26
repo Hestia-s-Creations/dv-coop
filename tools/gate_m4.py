@@ -485,6 +485,45 @@ def gatehaul(insts):
     return bool(good) and not unowned and ok10 and not dup, ev
 
 
+SHARD_WINDOW = 3.0   # s after a member reports a fracture parent in which its shards follow (stock: one per frame, <= 2 s)
+
+
+def gatememberfrac(insts):
+    """Member fractures get stock shards: every rock a member owns and breaks (its MPU, laser, claw, the seed bot)
+    spawns its shards on that member and hands them over (o.new), at a rate no worse than stock fractures on the
+    authority. A fracture with no shards counts only as stock luck (each shard gets one placement try per frame)."""
+    member = []    # (instance, [(t, parents, shards)])
+    for i in insts:
+        rows = []
+        for line in i.lines:
+            m = re.search(r"COOP: OWN o\.new: (\d+) shards, parents \[(.*)\]", line)
+            if m:
+                rows.append((_ts(line), [p.strip() for p in m.group(2).split(",") if p.strip()], int(m.group(1))))
+        if rows:
+            member.append((i, rows))
+    fractures = []   # (instance name, parent, shards within the window)
+    for i, rows in member:
+        for t, parents, _ in rows:
+            for p in parents:
+                got = sum(s for (u, _, s) in rows if t is not None and u is not None and t <= u <= t + SHARD_WINDOW)
+                fractures.append((i.name(), p, got))
+    if not fractures:
+        return False, ["FAIL: no member-owned fracture (an MPU eating ice, or --coop-bot=claw/haul seeding minerals)"]
+    zero = [f for f in fractures if f[2] == 0]
+    auth = [int(m.group(1)) for i in insts for m in i.grep(r"COOP: BOT frac trial=\d+ id=\S+ shards spawned=(\d+)")]
+    authZero = (sum(1 for n in auth if n == 0) / float(len(auth))) if auth else None
+    memZero = len(zero) / float(len(fractures))
+    # stock zero-shard rates seen on the authority: 8% (m4-g210b), 25% (2r final); allow that plus margin
+    limit = max(0.5, (authZero or 0) + 0.25)
+    ev = ["%d member fractures, %d with no shards (%.0f%%); authority-side zero-shard rate %s" % (
+        len(fractures), len(zero), memZero * 100, "%.0f%% of %d" % (authZero * 100, len(auth)) if auth else "n/a (no frac trials)")]
+    ev += ["%s fractured %s: %d shards" % f for f in fractures[:10]]
+    ok = memZero <= limit and len(zero) < len(fractures)
+    if not ok:
+        ev.append("FAIL: members get shards from %.0f%% of their fractures (limit %.0f%% with none)" % ((1 - memZero) * 100, limit * 100))
+    return ok, ev
+
+
 def _secs(line):
     m = re.search(r"\[\d+/\d+/\d+ (\d+):(\d+):(\d+)\]", line)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
@@ -585,6 +624,7 @@ GATES = {
     10: gate10,
     "10r": gate10r,
     "haul": gatehaul,
+    "memberfrac": gatememberfrac,
     7: gate7,
     8: gate8,
     9: gate9,
