@@ -21,9 +21,9 @@ f85d665958a0787ac9292ec49afb1775ebb87570a83d74154b57c44de06102bf  src/dv-coop/ex
 de702816472f47ad6ab50f64f1e397d943cd26bcc4788e36891f90731b7d919a  src/dv-coop/ext/FusionReactor.gd
 ae012c4b0bc9b5c50bc4de3062c9983bc10d623efc94be9e36c2d47e410ccf56  src/dv-coop/ext/MineralProcessingUnit.gd
 ac3fcd85ffff3165a41b70205da626146552b7d653bdb5f70664461bd46ecfb8  src/dv-coop/ext/PDT.gd
-40db58e722e3ec5465a57af550d54f6e6ba38244d9234a512f26812fda1c4147  src/dv-coop/ext/PauseLayer.gd
+b1dd8544a2f5e2b1caf28c8808a4627e820d15a42e3e4a8ff7ade92e480ed876  src/dv-coop/ext/PauseLayer.gd
 cf08439cf3455885e1fab25872971b7d4972c092271eef6ae5666917f4547498  src/dv-coop/ext/Reactor.gd
-faf2ef0849155fb50a94223807522558c1af88dc54f337edbd0f77417452ac72  src/dv-coop/ext/TitleMenu.gd
+6bc0e13e26c7f1945592cddf5580cbf931c33f2507ea65f7773d3275563bb383  src/dv-coop/ext/TitleMenu.gd
 f3ae0b90b1c394e174e972b4a72eef43160966efb031ada98efe91fb2b0d36c9  src/dv-coop/ext/asteroid.gd
 f19433ac1e2eb5347c3dd1686c4a7d59746834501ed1df990dd474433826c356  src/dv-coop/ext/drone-plant.gd
 391a08f91dac4a1cb582e8c5345d94d9cb2681775257a20072a5f42cd47d706c  src/dv-coop/ext/emp.gd
@@ -40,7 +40,7 @@ b167f1daed672999c761d84ac23409772aba28d3b5e640cd55dca4969a0f9229  src/dv-coop/ne
 e5b09fe004e696fd70ec4e2663a4f527cd2be89978bcf76e3be43ca347c0fb9e  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
 0de19213c345ad9b997d01cc14cc07651af2729de147741a5ab9a3f896dd4531  src/dv-coop/net/Travel.gd
-2a88b19a74a8a539479b42d6017414c75f543865fbd1709d493040e45d5089ae  src/dv-coop/ui/CoopPanel.gd
+a4bca50220fa31a1ab4af227f6b4ea2dff65b2694b63d464dee8441950434d58  src/dv-coop/ui/CoopPanel.gd
 c84a8575de008705b7918cbab5e292eb4b434668d432256c6fcec79b7357a520  src/dv-coop/ui/FriendOverlay.gd
 ad0e441b1e47020abba6ed89b9206d82c40387142cc3325daed6dd151efc76f4  tools/build.py
 b1a865b453c8c89ebf5f58fc7a1e0e1617d056f972df18177b7a0d209c5064f4  tools/dev2.sh

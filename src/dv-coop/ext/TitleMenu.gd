@@ -18,6 +18,7 @@ func _ready():
 	coopPanel = load("res://dv-coop/ui/CoopPanel.gd").new()
 	coopPanel.atTitle = true
 	coopPanel.titleMenu = self
+	coopPanel.cover = $MarginContainer
 	$NoMargins/Popups.add_child(coopPanel)
 
 func coopOpen():

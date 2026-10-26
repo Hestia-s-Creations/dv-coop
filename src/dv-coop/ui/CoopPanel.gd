@@ -16,6 +16,9 @@ var net = null
 var atTitle = false
 var titleMenu = null       # title: the stock TitleMenu, for its save slots and Continue
 var pauseLayer = null      # pause menu: the stock PauseLayer
+var cover = null           # the stock menu column; it draws over our container, so it hides while the panel is open
+
+const MIN_WIDTH = 620      # canvas units: long lines wrap inside this instead of widening the panel past the screen
 var body = null
 var buttons = {}           # name -> Button, for the dev driver (net/Travel.gd)
 var slotPick = null
@@ -47,6 +50,7 @@ func _ready():
 	body = VBoxContainer.new()
 	body.add_constant_override("separation", 8)
 	margin.add_child(body)
+	rect_min_size = Vector2(MIN_WIDTH, 0)
 	visible = false
 	if ModLoader.has_meta("dvcoop"):
 		net = ModLoader.get_meta("dvcoop")
@@ -61,6 +65,8 @@ func _withFallbacks(f: DynamicFont) -> DynamicFont:
 	return c
 
 func open():
+	if cover != null and is_instance_valid(cover):
+		cover.visible = false
 	visible = true
 	shown = ""
 	_refresh()
@@ -70,6 +76,8 @@ func close():
 	if not visible:
 		return
 	visible = false
+	if cover != null and is_instance_valid(cover):
+		cover.visible = true
 	if net != null and typeof(net.pendingJoin) != TYPE_NIL:
 		net.answerJoin(false)
 	Debug.l("COOP: UI co-op panel closed")
@@ -229,6 +237,7 @@ func _refresh():
 			var row = HBoxContainer.new()
 			body.add_child(row)
 			var l = Label.new()
+			l.autowrap = true
 			l.text = "%s, %s" % [f.name, f.where]
 			l.size_flags_horizontal = SIZE_EXPAND_FILL
 			row.add_child(l)
@@ -247,7 +256,8 @@ func _refresh():
 func _label(text, big = false):
 	var l = Label.new()
 	l.text = text
-	l.autowrap = false
+	l.autowrap = true
+	l.size_flags_horizontal = SIZE_EXPAND_FILL
 	if big:
 		l.align = Label.ALIGN_CENTER
 	body.add_child(l)
@@ -296,7 +306,7 @@ func _continueOnSlot() -> bool:
 	var file = slots[slotPick.selected][0]
 	Debug.l("COOP: UI joining with save %s" % file)
 	CurrentGame.saveFile = file
-	visible = false
+	close()
 	titleMenu._on_Continue_pressed()
 	return true
 

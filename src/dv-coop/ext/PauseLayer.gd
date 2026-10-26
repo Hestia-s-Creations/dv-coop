@@ -25,6 +25,7 @@ func _ready():
 	b.connect("pressed", self, "coopOpen")
 	coopPanel = load("res://dv-coop/ui/CoopPanel.gd").new()
 	coopPanel.pauseLayer = self
+	coopPanel.cover = $PauseContainer/MarginContainer
 	$PauseContainer/NoMargins/CenterContainer.add_child(coopPanel)
 
 func coopOpen():
