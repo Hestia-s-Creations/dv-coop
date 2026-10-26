@@ -82,6 +82,7 @@ var pauseAfter = -1.0
 var pauseClock = 0.0
 var pauseStep = 0
 var pauseKeyUp = -1.0     # release the pause key at this pauseClock (a press and its release in one frame never registers)
+var pauseWasFocused = true
 var storyNpc = false
 var storyDone = false
 var storyKept = null
@@ -376,6 +377,7 @@ func _devPauseTick(delta):
 			up.action = "pause"
 			up.pressed = false
 			Input.parse_input_event(up)
+			Settings.focused = pauseWasFocused
 			var pm = net._gameScene().get_node_or_null("PauseMenu") if net._gameScene() != null else null
 			_log("dev pause key released; tree paused=%s menu=%s" % [get_tree().paused,
 				pm.get_node("PauseContainer").visible if pm != null else "-"])
@@ -399,7 +401,11 @@ func _devPauseTick(delta):
 		1, 5:
 			CurrentGame.emit_signal("pauseGame", false)
 		2, 3:
-			# press now, release a few frames later: the stock handler needs is_action_just_pressed("pause")
+			# press now, release a few frames later: the stock handler needs is_action_just_pressed("pause").
+			# Stock Settings._input swallows every event while the OS window is unfocused (Settings.gd :559-561), and
+			# dev windows run in the background, so count this window as focused for the press, as a player's is.
+			pauseWasFocused = Settings.focused
+			Settings.focused = true
 			var ev = InputEventAction.new()
 			ev.action = "pause"
 			ev.pressed = true
