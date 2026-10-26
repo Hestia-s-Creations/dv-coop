@@ -8,14 +8,59 @@ extends "res://PauseLayer.gd"
 # goes through pauseGame, so this one override covers them. The stock pause key toggles with `not tree.paused`, which
 # stays false in a cell, so a pause-key press while the menu is open is read here as "close". While the menu is open
 # the local ship takes no manual input (ship-ctrl ext), so clicking the menu doesn't fly the ship.
+#
+# M5: a "Co-op" button after Resume opens the co-op panel (ui/CoopPanel.gd) in the menu's own CenterContainer, in
+# flight and at Enceladus. A join request (a Steam invite while playing) opens the menu with the question on it.
 
+var coopPanel = null
+
+func _ready():
+	add_to_group("dvcoop_pause")
+	var box = $PauseContainer/MarginContainer/VBoxContainer
+	var b = Button.new()
+	b.name = "Coop"
+	b.text = "Co-op"
+	box.add_child(b)
+	box.move_child(b, box.get_node("Resume").get_index() + 1)
+	b.connect("pressed", self, "coopOpen")
+	coopPanel = load("res://dv-coop/ui/CoopPanel.gd").new()
+	coopPanel.pauseLayer = self
+	coopPanel.cover = $PauseContainer/MarginContainer
+	$PauseContainer/NoMargins/CenterContainer.add_child(coopPanel)
+
+func coopOpen():
+	if not $PauseContainer.visible:
+		pauseGame(true)
+	coopPanel.open()
+
+func coopAsk():
+	coopOpen()
+
+# In a cell, or about to be: a friend's ship is in puppet range. Either way pausing would freeze them too (or keep
+# their cell from forming with us), so the menu opens without pausing.
 func _coopInCell() -> bool:
 	if not ModLoader.has_meta("dvcoop"):
 		return false
-	var cell = ModLoader.get_meta("dvcoop").get_node_or_null("Cell")
-	return cell != null and cell.inCell()
+	var net = ModLoader.get_meta("dvcoop")
+	var cell = net.get_node_or_null("Cell")
+	if cell != null and cell.inCell():
+		return true
+	for id in net.peers:
+		if net.peers[id].get("inRange", false):
+			return true
+	return false
+
+# A player paused alone (stock pause: key, focus loss, overlay) and a friend arrives or a cell forms: the stock pause
+# becomes the cell-style menu. The game runs again, the menu stays up and closes as usual (Resume, pause key).
+func _process(_delta):
+	if get_tree().paused and $PauseContainer.visible and _coopInCell():
+		get_tree().paused = false
+		Engine.set_meta("dvcoop_menu", true)
+		Debug.l("COOP: SHIPS pause menu open in a cell, game resumed (a friend arrived while paused)")
 
 func pauseGame(pause):
+	if not pause and coopPanel != null:
+		coopPanel.close()
 	if not _coopInCell():
 		if Engine.has_meta("dvcoop_menu"):
 			Engine.remove_meta("dvcoop_menu")

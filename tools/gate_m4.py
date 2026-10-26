@@ -16,14 +16,10 @@ class Instance:
     def __init__(self, path):
         self.path = path
         self.lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
-        # the transport's peer id: ENet's when the run used ENet (a Steam client also logs its Steam id, which
-        # other lines never use), else Steam's
-        self.peer = None
-        for rx in (r"COOP: ENet connected to server, I am (\d+)", r"Steam ready, I am (\d+)"):
-            m = next((m for m in (re.search(rx, l) for l in self.lines) if m), None)
-            if m:
-                self.peer = m.group(1)
-                break
+        # the ENet id when there is one: every dev instance also logs "Steam ready" with the same shared Steam id
+        enet = [m.group(1) for m in (re.search(r"COOP: ENet connected to server, I am (\d+)", l) for l in self.lines) if m]
+        steam = [m.group(1) for m in (re.search(r"Steam ready, I am (\d+)", l) for l in self.lines) if m]
+        self.peer = (enet or steam or [None])[0]
 
     def grep(self, pattern):
         rx = re.compile(pattern)
