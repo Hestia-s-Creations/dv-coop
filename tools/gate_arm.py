@@ -210,9 +210,20 @@ def phase2():
     return stop("2r", "2r")
 
 
+HOLD_FRESH = 3.0   # s: the claw bot logs "holding" every second, at whole-second resolution
+
+
 def holding(inst):
-    # a rock locked in this instance's arm and owned by it (haul drones and the hold also claim; they don't count)
-    return bool(grep(inst, r"COOP: BOT claw holding id=\S+ .*locked=True mine=True"))
+    """The rock id this instance holds right now: its latest claw "holding" line is at most HOLD_FRESH s old and
+    says locked in the arm and owned (haul drones and the hold also claim; they don't count). None otherwise."""
+    rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)")
+    if not rows:
+        return None
+    last = rows[-1]
+    t = time.mktime(time.strptime(last.group(1), "%Y/%m/%d %H:%M:%S"))
+    if time.time() - t > HOLD_FRESH or last.group(3) != "True" or last.group(4) != "True":
+        return None
+    return last.group(2)
 
 
 @at_arm_dive
@@ -243,19 +254,23 @@ def phase34(attempt):
     x = x[0]
     survivors = [i for i in "ABC" if i != x]
     promoted = min(survivors, key=lambda i: ids[i])
-    want = [i for i in survivors if i != promoted and i in "BC"]
-    if want:
-        wait_for(lambda: holding(want[0]), 60)   # the other arm may still be reaching
+    # gate 4 needs, at the instant of the kill, a member that holds a rock right now and is not the promotion target
+    # (a hold can lapse: the arm lets go and the bot reaches again), so poll for that and kill the moment it holds
+    h4 = wait_for(lambda: [i for i in survivors if i != promoted and holding(i)], 90, 0.5) or []
     holders = [i for i in survivors if holding(i)]
-    h4 = [i for i in holders if i != promoted]
-    log("ids %s, authority %s, promoted next %s, holders %s" % (ids, x, promoted, holders))
+    log("ids %s, authority %s, promoted next %s, holding now %s%s" % (ids, x, promoted, holders,
+        "" if not h4 else ", gate 4 holder %s with %s" % (h4[0], holding(h4[0]))))
     four = bool(h4)
     if four:
         kill(x)       # gate 4: `promoted` takes over and adopts h4's rock from o.list; h4 keeps holding
         wait_for(lambda: grep(promoted, r"COOP: OWN o\.list adopts"), 20, 1)
         time.sleep(8)
         kill(h4[0])   # gate 3: the new authority re-owns the rock of the killed holder
-    elif holders:
+    elif holders or wait_for(lambda: [i for i in survivors if holding(i)], 30, 0.5):
+        holders = [i for i in survivors if holding(i)] or holders
+        if not holders:
+            stop("3-4", "")
+            return {"3": None, "4": None}
         kill(holders[0])   # gate 3 only: the holder is the one who would be promoted
     else:
         stop("3-4", "")
