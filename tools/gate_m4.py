@@ -434,6 +434,10 @@ def gate10r(insts):
         for m in i.grep(r"COOP: BOT mpu trial=\d+ id=\S+ result=(\S+)"):
             results[m.group(1)] = results.get(m.group(1), 0) + 1
     consumed = results.get("eaten", 0) + results.get("fractured", 0)
+    # the MPU's mineral branch (processed into cargo, disabled layer, deferred remove) must be seen at least once:
+    # the member's o.eat, tombstoned by the authority
+    mineral = [m.group(1) for i in insts for m in i.grep(r"COOP: BOT mpu trial=\d+ id=(\S+) result=eaten")
+               if i.grep(r"COOP: OWN eat %s \(" % re.escape(m.group(1))) and m.group(1) in eaten]
     simulated = sum(i.count(r"COOP: BOT eat trial=") for i in insts)
     nompu = sum(i.count(r"COOP: BOT mpu: no MPU") for i in insts)
     dup = _mpuDuplicates(insts)
@@ -445,11 +449,15 @@ def gate10r(insts):
     ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
     if not lines:
         ev.append("FAIL: no conservation lines (the authority logs one every 30 s)")
+    ev.append("mineral rocks eaten by a member's MPU (o.eat + tombstone): %d %s" % (len(mineral), mineral[:5]))
     if not consumed:
         ev.append("FAIL: the stock MPU consumed no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
+    if not mineral:
+        ev.append("FAIL: no mineral rock went through the MPU's eat branch (o.eat + tombstone)")
     if simulated:
         ev.append("FAIL: %d simulated eat-bot lines; gate 10r is the real MPU only" % simulated)
-    return bool(lines) and not bad and not twice and not badaudit and consumed > 0 and not simulated and not dup, ev
+    return bool(lines) and not bad and not twice and not badaudit and consumed > 0 and bool(mineral) and not simulated \
+        and not dup, ev
 
 
 def _mpuDuplicates(insts):

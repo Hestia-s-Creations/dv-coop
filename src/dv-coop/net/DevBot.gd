@@ -60,6 +60,7 @@ const FRAC_EVERY_ARM = 12.0  # s between trials with a real arm: lead + reach + 
 const EAT_EVERY = 4.0        # s between eat trials
 const MPU_WAIT = 6.0         # s for the intake to take a rock and the claim to resolve
 const MPU_EAT = 90.0         # s for the MPU to finish processing it
+const MPU_MINERAL_WAIT = 120.0  # s the mpu bot looks for (and makes) a mineral rock before taking any rock
 const HAUL_OFFSET = 700.0   # px from the rock to the ship when a haul trial starts
 const HAUL_TIME = 40.0      # s a haul trial watches the drones
 const SHOOT_TIME = 3.0
@@ -94,6 +95,8 @@ var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 var eatJob = {"id": "", "until": 0.0, "result": ""}
 var mpuJob = {"state": "idle", "id": "", "until": 0.0}   # mpu: feed (intake on the rock, claim pending) -> eat
 var mpuChecked = false
+var mpuMineralSince = -1.0   # mpu: when the bot started looking for a mineral rock to feed first
+var mpuMineralFed = false
 var haulJob = {"state": "idle", "id": "", "until": 0.0}   # haul: watch -> result
 
 func _ready():
@@ -340,18 +343,30 @@ func _mpuTick():
 		"idle":
 			if trial >= trials or now < mpuJob.until:
 				return
+			# Until a mineral rock has been fed, only minerals: they take the MPU's `remove` branch (processed into
+			# cargo, o.eat), while ice takes its damage branch (fracture). The ring spawns no minerals, so make some
+			# (break a class-4 rock, _seedMinerals) and fall back to any rock after MPU_MINERAL_WAIT.
+			if mpuMineralSince < 0:
+				mpuMineralSince = now
+			var wantMineral = not mpuMineralFed and now - mpuMineralSince < MPU_MINERAL_WAIT
 			var best = ""
 			var bestD = 0.0
 			for id in rs.tracked:
 				var n = rs.tracked[id].n
 				if not is_instance_valid(n) or n.get("fracturing") == true or own.owners.has(id) or skipIds.has(id):
 					continue
+				if wantMineral and n.get("mineralContent") == null:
+					continue
 				var d = n.global_position.distance_to(ship.global_position)
 				if best == "" or d < bestD:
 					best = id
 					bestD = d
 			if best == "":
+				if wantMineral:
+					_seedMinerals(ship, now)
 				return
+			if rs.nodeOf(best).get("mineralContent") != null:
+				mpuMineralFed = true
 			trial += 1
 			skipIds[best] = true
 			mpuJob = {"state": "feed", "id": best, "until": now + MPU_WAIT}
