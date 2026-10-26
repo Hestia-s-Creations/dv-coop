@@ -18,7 +18,8 @@ extends Node
 #      --coop-dev-ui=<s>:<action>[,<s>:<action>...]  run the co-op panel's real buttons in order, each s seconds after
 #                              the previous one: coop (open the panel), host, join (the request's Join, or else the
 #                              first friend's), leave, invite, no, close, slot=<file>, capture (log the panel's rect
-#                              and the viewport, for the resolution matrix)
+#                              and the viewport, for the resolution matrix), resume (close the pause menu)
+#      --coop-dev-ui-scene=<scene>  run the --coop-dev-ui steps only in that scene (title, station, dive)
 #      --coop-dev-invite=<scene>:<s>,<lobby>  (repeatable) a join request for <lobby> (ENet: host:port) arriving s
 #                              seconds into that scene, as a Steam join_requested would
 #      --coop-dev-answer=<yes|no>[,...]  answer the join requests in turn, 3 s after each is shown
@@ -43,6 +44,7 @@ var course = null            # {id, name, ship, dict, phase}: a course to a frie
 # dev
 var uiSteps = []             # [[s, action]]
 var uiClock = 0.0
+var uiScene = ""
 var invites = []             # [[scene, s, lobby]]
 var answers = []
 var answerAt = -1.0
@@ -60,6 +62,8 @@ func _ready():
 			for step in arg.substr(14).split(","):
 				var kv = step.split(":", true, 1)
 				uiSteps.append([float(kv[0]), kv[1] if kv.size() > 1 else ""])
+		elif arg.begins_with("--coop-dev-ui-scene="):
+			uiScene = arg.substr(20)
 		elif arg.begins_with("--coop-dev-invite="):
 			var parts = arg.substr(18).split(",", true, 1)
 			var at = parts[0].split(":")
@@ -258,7 +262,7 @@ func _devTick(delta):
 		var a = answers.pop_front()
 		_press("yes" if a == "yes" else "no")
 	# the co-op panel's buttons
-	if not uiSteps.empty():
+	if not uiSteps.empty() and (uiScene == "" or uiScene == sceneKind):
 		uiClock += delta
 		if uiClock >= uiSteps[0][0]:
 			uiClock = 0.0
@@ -292,6 +296,9 @@ func _uiAction(action: String):
 	elif action.begins_with("slot="):
 		if panel != null:
 			_log("dev: slot %s %s" % [action.substr(5), "picked" if panel.selectSlot(action.substr(5)) else "not found"])
+	elif action == "resume":
+		if host != null and host.has_method("pauseGame"):
+			host.pauseGame(false)
 	elif action == "capture":
 		if panel != null:
 			var r = panel.get_global_rect()

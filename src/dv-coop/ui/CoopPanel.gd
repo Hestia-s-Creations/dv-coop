@@ -15,6 +15,7 @@ extends PanelContainer
 var net = null
 var atTitle = false
 var titleMenu = null       # title: the stock TitleMenu, for its save slots and Continue
+var pauseLayer = null      # pause menu: the stock PauseLayer
 var body = null
 var buttons = {}           # name -> Button, for the dev driver (net/Travel.gd)
 var slotPick = null
@@ -328,3 +329,5 @@ func _onAnswer(yes):
 	net.answerJoin(yes)
 	if yes and atTitle:
 		_continueOnSlot()
+	elif not atTitle and pauseLayer != null:
+		pauseLayer.pauseGame(false)   # the question opened the menu; answering it goes back to the game

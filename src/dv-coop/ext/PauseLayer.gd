@@ -24,6 +24,7 @@ func _ready():
 	box.move_child(b, box.get_node("Resume").get_index() + 1)
 	b.connect("pressed", self, "coopOpen")
 	coopPanel = load("res://dv-coop/ui/CoopPanel.gd").new()
+	coopPanel.pauseLayer = self
 	$PauseContainer/NoMargins/CenterContainer.add_child(coopPanel)
 
 func coopOpen():
