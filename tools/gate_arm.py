@@ -66,7 +66,7 @@ def authority():
 
 
 # Git Bash, not WSL's bash.exe, which a bare "bash" can resolve to when this runs outside Git Bash
-BASH = next((b for b in [r"C:\Program Files\Gitinash.exe"] if WIN and os.path.exists(b)), "bash")
+BASH = next((b for b in ["C:/Program Files/Git/bin/bash.exe"] if WIN and os.path.exists(b)), "bash")
 
 
 def sh(args, env=None, check=True):
