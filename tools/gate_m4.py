@@ -456,7 +456,9 @@ def gatehaul(insts):
     ev += ["gate 10: " + e for e in ev10]
     if not good:
         ev.append("FAIL: no rock was hauled while owned")
-    return bool(good) and not unowned and ok10, ev
+    dup = _mpuDuplicates(insts)
+    ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
+    return bool(good) and not unowned and ok10 and not dup, ev
 
 
 def _secs(line):
