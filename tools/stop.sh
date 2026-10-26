@@ -19,9 +19,11 @@ fi
 holder="$(cut -d' ' -f1 "$DV_LOCK/owner" 2>/dev/null)"
 RUN="$DV_INST/dvcoop-runs/${holder:-unknown}-$(date +%Y%m%d-%H%M%S)"
 for d in "$DV_DATA" "$DV_INST"/dvcoop_inst*; do
-  ls "$d/dV/logs"/dv_log_*.txt >/dev/null 2>&1 || continue
+  # only logs written during this run (an instance dir this run didn't use still holds an old one)
+  logs="$(find "$d/dV/logs" -maxdepth 1 -name 'dv_log_*.txt' -newer "$DV_LOCK/owner" 2>/dev/null)"
+  [ -n "$logs" ] || continue
   name="$(basename "$d")"; [ "$d" = "$DV_DATA" ] && name=A
-  mkdir -p "$RUN/$name/dV/logs" && cp "$d/dV/logs"/dv_log_*.txt "$RUN/$name/dV/logs/"
+  mkdir -p "$RUN/$name/dV/logs" && echo "$logs" | while read -r f; do cp "$f" "$RUN/$name/dV/logs/"; done
 done
 ls -dt "$DV_INST"/dvcoop-runs/*/ 2>/dev/null | tail -n +31 | xargs -r rm -rf   # keep the newest 30
 rm -rf "$DV_LOCK"
