@@ -31,7 +31,7 @@ func fillDestinations():
 
 func _on_PlotCourse_pressed():
 	var travel = _travel()
-	if travel != null and travel.friendOf(currentDestination) != null:
+	if travel != null and typeof(travel.friendOf(currentDestination)) != TYPE_NIL:
 		Debug.l("Fast travel to %s" % currentDestination)
 		travel.plotToFriend(travel.friendOf(currentDestination))
 		return

@@ -26,7 +26,7 @@ func _on_Dive_pressed():
 	var was = launching
 	var friend = coopFriend
 	._on_Dive_pressed()
-	if was or friend == null or not ModLoader.has_meta("dvcoop"):
+	if was or typeof(friend) == TYPE_NIL or not ModLoader.has_meta("dvcoop"):
 		return
 	var travel = ModLoader.get_meta("dvcoop").get_node_or_null("Travel")
 	if travel != null:

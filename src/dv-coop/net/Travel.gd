@@ -53,6 +53,7 @@ var dropAt = -1.0
 var dropFor = 0.0
 
 func _ready():
+	name = "Travel"   # the travel extensions find this module by name
 	net.connect("session_changed", self, "_sessionChanged")
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-dev-ui="):
@@ -146,6 +147,12 @@ func _courseTick():
 	var f = friend(course.id)
 	if f != null and course.phase != "arrived":
 		course.dict.vector = f.p + f.v * JUMP_LEAD
+	course.logAccum = course.get("logAccum", 0.0) + get_physics_process_delta_time()
+	if course.phase == "burn" and course.logAccum >= 5.0:
+		course.logAccum = 0.0
+		_log("course to friend %s: burn progress %s, blocked by proximity %s, velocity %s, wanted %s, autopilot %s" % [
+			course.name, ship.get("trajectoryProgress"), ship.isAstrogationBlockedByProximity(), ship.linear_velocity,
+			course.dict.get("init"), ship.get("autopilot")])
 	match course.phase:
 		"burn":
 			if ship.get("trajectoryTarget") != course.dict:
@@ -295,6 +302,7 @@ func _uiAction(action: String):
 
 func _diveFriendStep():
 	var c = Loader.current
+	diveFriendAfter += 1.0   # a step that isn't ready yet tries again in 1 s (the others shift with it)
 	match diveFriendStep:
 		0:
 			if friends().empty():
@@ -308,7 +316,7 @@ func _diveFriendStep():
 			var l = list[0]
 			var idx = -1
 			for i in range(l.destinationLut.size()):
-				if friendOf(l.destinationLut[i]) != null:
+				if typeof(friendOf(l.destinationLut[i])) != TYPE_NIL:
 					idx = i
 					break
 			if idx < 0:
