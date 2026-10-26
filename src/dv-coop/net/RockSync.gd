@@ -58,9 +58,12 @@ var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0, "defer": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
 var hooked = null    # the Cell whose signals we listen to
 var replaying = false
+var fader = null     # RockFade: the stock fade-in for the rocks we build, robust to the long frame a batch build makes
 
 func _ready():
 	name = "RockSync"
+	fader = load("res://dv-coop/net/RockFade.gd").new()
+	add_child(fader)
 	# coop:dev{
 	var sample = OS.get_environment("DVCOOP_RS_SAMPLE")
 	if sample != "" and float(sample) > 0:
@@ -357,6 +360,7 @@ func _build(rc, asTracked = true):
 		n.additionalScale = rc[2]   # asteroid._ready() applies it through setScale
 		n.splitsTo = int(rc[10])
 	field.add_child(n)
+	fader.add(n)
 	n.linear_velocity = rc[5]
 	n.angular_velocity = rc[6]
 	if mineral:
