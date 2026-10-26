@@ -53,7 +53,10 @@ const CLAW_GAP = 2.0        # s between claw trials
 const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
 const FRAC_EVERY = 8.0       # s between fracture-race trials
 const FRAC_LEAD = 1.5        # s between bot.frac and the fracture instant
-const FRAC_SHARD_WAIT = 4.0  # s a denied member waits for its arm to take a shard
+const FRAC_SHARD_WAIT = 6.0  # s a member whose claim lost to the fracture chases a shard with its arm
+const FRAC_ARM_LEAD = 1.2    # s before the fracture instant the arm starts reaching, at most (random per trial)
+const FRAC_REACH_AFTER = 3.0 # s after that the reach gives up on the parent (it should have locked or broken)
+const FRAC_EVERY_ARM = 12.0  # s between trials with a real arm: lead + reach + shard chase
 const EAT_EVERY = 4.0        # s between eat trials
 const MPU_WAIT = 6.0         # s for the intake to take a rock and the claim to resolve
 const MPU_EAT = 90.0         # s for the MPU to finish processing it
@@ -557,7 +560,7 @@ func _fracCoordinate(c, now):
 			best = id
 	if best == "":
 		return
-	nextAt = now + FRAC_EVERY
+	nextAt = now + (FRAC_EVERY if noArm else FRAC_EVERY_ARM)
 	trial += 1
 	var at = OS.get_system_time_msecs() + int(FRAC_LEAD * 1000)
 	fracPlan.append({"trial": trial, "id": best, "at": at})
@@ -587,43 +590,79 @@ func _fracMember(now):
 	if arm == null or ship == null or ship.get("cutscene") == true:
 		return
 	var wall = OS.get_system_time_msecs()
+	var rs = _rs()
 	match frac.state:
 		"wait":
-			if wall >= frac.at - 400:   # start reaching so the lock lands around the fracture instant
+			if not frac.has("lead"):
+				# the stock arm locks 0-1 s after its dock area covers a rock: start reaching up to FRAC_ARM_LEAD early,
+				# at random, so both orders (lock first / fracture first) occur
+				frac.lead = int(rand_range(0, FRAC_ARM_LEAD * 1000))
+				frac.before = {}
+				for id in rs.tracked:
+					frac.before[id] = true
+				for p in _haulPlants(ship, []):
+					p.enabled = false   # the ship's own haul drones would claim the rocks we race for
+			if wall >= frac.at - frac.lead:
 				frac.state = "reach"
-				frac.until = now + 3.0
+				frac.until = now + frac.lead / 1000.0 + FRAC_REACH_AFTER
 				claw.id = frac.id
 				claw.result = ""
 				arm.enabled = true
-		"reach", "shards":
-			var rock = _rs().nodeOf(frac.id)
-			if rock != null and frac.state == "reach":
+		"reach":
+			var rock = rs.nodeOf(frac.id)
+			if rock != null:
 				frac.pos = rock.global_position
-			var aim = frac.pos
-			var area = arm.get("areaDockArea")
-			if aim != null and area != null and not arm.locked:
-				var off = aim - area.global_position
-				if off.length() > 20.0:
-					ship.global_position += off
-					ship.reset_physics_interpolation()
-					if rock != null:
-						ship.linear_velocity = rock.linear_velocity
-			if frac.state == "reach":
-				if claw.result == "granted":
-					_fracEnd(arm, "rock", now)
-				elif claw.result.begins_with("denied"):
-					frac.state = "shards"
-					frac.until = now + FRAC_SHARD_WAIT
-					Debug.l("COOP: BOT frac trial=%d id=%s claim %s, waiting for a shard" % [frac.trial, frac.id, claw.result])
-				elif now > frac.until:
-					_fracEnd(arm, "neither", now)
-			else:
-				for id in _own().mine:
-					if id != frac.id:
-						_fracEnd(arm, "shards", now, id)
-						return
-				if now > frac.until:
-					_fracEnd(arm, "neither", now)
+				_aimArm(arm, ship, rock.global_position, rock.linear_velocity)
+			if claw.result == "granted":
+				_fracEnd(arm, "rock", now)
+			elif claw.result.begins_with("denied") or rock == null:
+				# the fracture won (denied "fracturing", or the parent already left our field): go for a shard
+				frac.state = "shards"
+				frac.until = now + FRAC_SHARD_WAIT
+				frac.skip = {}
+				claw.id = ""
+				claw.result = ""
+				Debug.l("COOP: BOT frac trial=%d id=%s parent %s, reaching for a shard" % [frac.trial, frac.id,
+					"gone" if rock == null else claw.result])
+			elif now > frac.until:
+				_fracEnd(arm, "neither", now)
+		"shards":
+			for id in _own().mine:
+				if id != frac.id and not frac.before.has(id):
+					_fracEnd(arm, "shards", now, id)
+					return
+			if claw.id != "" and (claw.result.begins_with("denied") or rs.nodeOf(claw.id) == null):
+				frac.skip[claw.id] = true
+				claw.id = ""
+				claw.result = ""
+			if claw.id == "" and frac.pos != null:
+				var best = ""
+				var bestD = 0.0
+				for id in rs.tracked:
+					var n = rs.tracked[id].n
+					if frac.before.has(id) or frac.skip.has(id) or not is_instance_valid(n) or n.mass > CLAW_MASS:
+						continue
+					var d = n.global_position.distance_to(frac.pos)
+					if d < 1500.0 and (best == "" or d < bestD):
+						best = id
+						bestD = d
+				claw.id = best
+			var shard = rs.nodeOf(claw.id) if claw.id != "" else null
+			if shard != null:
+				_aimArm(arm, ship, shard.global_position, shard.linear_velocity)
+			if now > frac.until:
+				_fracEnd(arm, "neither", now)
+
+# Keep the arm's dock area on `at`, moving with the target, until the stock arm locks.
+func _aimArm(arm, ship, at, vel):
+	var area = arm.get("areaDockArea")
+	if area == null or arm.locked:
+		return
+	var off = at - area.global_position
+	if off.length() > 20.0:
+		ship.global_position += off
+		ship.reset_physics_interpolation()
+	ship.linear_velocity = vel
 
 # Protocol race without an arm: claim at the agreed instant (jittered so either side can win), then shards.
 func _fracClaim(now):

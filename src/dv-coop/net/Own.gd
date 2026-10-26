@@ -138,8 +138,8 @@ func touch(node, why) -> bool:
 const TIMED_BACKOFF = 2.0
 
 func touchFor(node, why, linger) -> bool:
-	if not _inCell() or node == null or not node.has_meta("dvnet"):
-		return true
+	if not _inCell() or node == null or not node.has_meta("dvnet") or not _rs().isRock(node):
+		return true   # tug drones also push ships; only rocks are claimed
 	var id = node.get_meta("dvnet")
 	var now = _now()
 	if backoff.get(id, 0.0) > now:
@@ -161,6 +161,9 @@ func _expireTimed(now):
 				untouch(n, why)
 		if timed[id].empty():
 			timed.erase(id)
+
+func backingOff(node) -> bool:
+	return node != null and node.has_meta("dvnet") and backoff.get(node.get_meta("dvnet"), 0.0) > _now()
 
 func _onTimedDenied(id, why):
 	if timed.has(id):

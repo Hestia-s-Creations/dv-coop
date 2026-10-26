@@ -31,7 +31,7 @@ BASE = {"DIVE_X": str(DIVE_X), "DIVE_Y": str(DIVE_Y), "OFF_B": str(OFF_B), "WARP
 LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop_instB", "dV", "logs"),
           "C": os.path.join(INST, "dvcoop_instC", "dV", "logs")}
 OFFSET = {"A": "%d,%d" % (DIVE_X, DIVE_Y), "B": "%d,%d" % (DIVE_X, DIVE_Y + OFF_B), "C": "%d,%d" % (DIVE_X, DIVE_Y + OFF_C)}
-FRAC_N = int(os.environ.get("FRAC_N", "40"))   # 8 s a trial: 40 fit in the 10-minute window with the ~3 min warm-up
+FRAC_N = int(os.environ.get("FRAC_N", "30"))   # 12 s an arm trial: 30 fit in the 9-minute limit with the ~2.5 min warm-up
 MPU_N = int(os.environ.get("MPU_N", "5"))
 LIMIT = 9 * 60
 
@@ -156,7 +156,7 @@ def phase2():
     done = wait_for(lambda: sum(len(grep(i, r"COOP: BOT frac trial=\d+ id=\S+ shards spawned=")) for i in "ABC") >= FRAC_N, LIMIT, 10)
     log("fracture trials %s" % ("complete" if done else "cut at the time limit"))
     time.sleep(8)   # the last trial's member result
-    return stop("2r", "2r,10")
+    return stop("2r", "2r")
 
 
 def phase34(attempt):
