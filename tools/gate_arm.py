@@ -327,7 +327,7 @@ def phase34(attempt):
     launch("3-4", {"A": hold % SLOT_A, "B": hold % SLOT, "C": hold % SLOT})
     if not loadout_ok("3-4", "ABC"):
         return {"3": False, "4": False}
-    if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
+    if not wait_for(lambda: holding("A") or holding("B") or holding("C"), LIMIT - 120):   # A holds too (run 090808)
         log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
         stop("3-4", "")
         return {"3": None, "4": None}

@@ -1016,16 +1016,27 @@ func _seedMinerals(ship, now):
 	seedJob.next = now + SEED_EVERY
 	var best = ""
 	var bestD = 0.0
+	var why = {"class4": 0, "owned": 0, "far": 0, "theirs": 0, "blocked": 0}   # evidence when none is found
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.get("asteroidClass") != 4 or n.get("splitEnergyThreshold") == null \
-				or n.get("fracturing") == true or own.owners.has(id):
+				or n.get("fracturing") == true:
 			continue
+		why.class4 += 1
 		var d = n.global_position.distance_to(ship.global_position)
-		if d < BOT_REACH and (best == "" or d < bestD) and spotBlocked.get(id, 0.0) <= now and not _theirs(ship, n):
+		if own.owners.has(id):
+			why.owned += 1
+		elif d >= BOT_REACH:
+			why.far += 1
+		elif spotBlocked.get(id, 0.0) > now:
+			why.blocked += 1
+		elif _theirs(ship, n):
+			why.theirs += 1
+		elif best == "" or d < bestD:
 			best = id
 			bestD = d
 	if best == "":
+		Debug.l("COOP: BOT seed none within %.0f px: tracked=%d %s" % [BOT_REACH, rs.tracked.size(), why])
 		return
 	var rock = rs.nodeOf(best)
 	if bestD > SEED_NEAR * 1.5 or bestD < SEED_NEAR * 0.75:   # the fracture is obliterating: never from close by
@@ -1074,8 +1085,9 @@ func _armTakes(arm, ship, n) -> bool:
 # that fast (run 063348: A matched one and flew home). The teleport keeps the ship on the target anyway.
 const SHIP_MAX_V = 1000.0
 # How far the claw and the seeding look for a rock (px). Run 081334: an uncapped pick (a rock identified down to its
-# value anywhere in the tracked set) teleported B 9.4k px.
-const BOT_REACH = 3000.0
+# value anywhere in the tracked set) teleported B 9.4k px. 3000 starved B in run 090013 (no seed, no reach in 7 min);
+# every destination is checked clear anyway (_spotClear).
+const BOT_REACH = 5000.0
 func _shipVel(v: Vector2) -> Vector2:
 	return v.clamped(SHIP_MAX_V)
 
