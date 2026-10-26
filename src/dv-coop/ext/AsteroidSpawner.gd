@@ -21,6 +21,32 @@ var coopShardRefused = false
 # table picked no rock for this spot's chaos, a stock "no shard")
 var coopShardStats = {"tries": 0, "ok": 0, "despawn": 0, "blocked": 0, "none": 0}
 var coopShardLogAt = 0
+var coopShardBlockedBy = ""
+
+# What the stock overlap test (asteroidIntersectionTest layers) finds at a shard spot: a circle of the class's
+# estimated radius, which is close to the shard's own shape. Evidence only.
+func _coopWhatBlocks(oc, spot) -> String:
+	var shape = CircleShape2D.new()
+	shape.radius = estimatedRadiusByClass[clamp(oc, 0, estimatedRadiusByClass.size() - 1)]
+	var params = Physics2DShapeQueryParameters.new()
+	params.set_shape(shape)
+	params.margin = initialMargin
+	params.transform = Transform2D(0, spot)
+	params.collision_layer = asteroidIntersectionTest
+	params.collide_with_areas = true
+	params.collide_with_bodies = true
+	var hits = get_world_2d().direct_space_state.intersect_shape(params, 4)
+	var out = []
+	for h in hits:
+		var c = h.collider
+		if c == null or not is_instance_valid(c):
+			continue
+		var tag = "ship" if c.has_method("isPlayerControlled") else ("rock" if c.has_meta("dvnet") else c.get_class())
+		for m in ["dvnet_puppet", "dvnet_tracked", "dvnet_mirror"]:
+			if c.has_meta(m):
+				tag += "+" + m
+		out.append("%s[%s layer=%x]" % [c.name, tag, c.collision_layer if "collision_layer" in c else 0])
+	return PoolStringArray(out).join(", ") if out.size() > 0 else "nothing found by a circle query"
 
 func _coopMember() -> bool:
 	if not ModLoader.has_meta("dvcoop"):
@@ -49,13 +75,17 @@ func spawnAsteroidByClass(oc, spot, chaos, spawnPointRandomness = 0.0, initialLi
 			coopShardStats.despawn += 1
 		else:
 			coopShardStats.blocked += 1
+			if coopShardBlockedBy == "":
+				coopShardBlockedBy = _coopWhatBlocks(oc, spot)
 		var t = OS.get_ticks_msec()
 		if t >= coopShardLogAt:
 			coopShardLogAt = t + 5000
-			Debug.l("COOP: RS member shards: tries=%d ok=%d despawn=%d blocked=%d none=%d" % [coopShardStats.tries,
-				coopShardStats.ok, coopShardStats.despawn, coopShardStats.blocked, coopShardStats.none])
+			Debug.l("COOP: RS member shards: tries=%d ok=%d despawn=%d blocked=%d none=%d%s" % [coopShardStats.tries,
+				coopShardStats.ok, coopShardStats.despawn, coopShardStats.blocked, coopShardStats.none,
+				"" if coopShardBlockedBy == "" else " (first blocked by %s)" % coopShardBlockedBy])
 			for k in coopShardStats:
 				coopShardStats[k] = 0
+			coopShardBlockedBy = ""
 	coopShard = false
 	return r
 

@@ -422,6 +422,7 @@ func _physics_process(delta):
 			_attach(f)
 	if field == null:
 		return
+	_unfreezeFractures()
 
 	var cell = _cell()
 	var want = "solo"
@@ -775,6 +776,26 @@ func _correct():
 				n.linear_velocity = lv
 			if abs(av - n.angular_velocity) > 0.005:
 				n.angular_velocity = av
+
+# A fracturing rock splits only while its _process runs: fractureTime counts down there, and the shards come once it
+# passes splitTimePoint (asteroid.gd). A resting rock has both its process callbacks off, and a push that wakes it
+# from outside its own physics call (one shot of energy, as when a member breaks a rock it holds) loses a race: the
+# physics callback it enables only runs from the next frame, while the idle _process runs this frame, sees a faded,
+# not-yet-fracturing rock and switches itself off (asteroid.gd: fade == 1 and not fracturing). The next physics step
+# starts the fracture, and nothing wakes _process again: the rock never splits and vanishes after freeTime.
+var unfrozen = 0
+var unfrozenLogAt = 0
+
+func _unfreezeFractures():
+	for id in bodies:
+		var n = bodies[id]
+		if is_instance_valid(n) and n.get("fracturing") == true and not n.is_processing() and isRock(n):
+			n.set_process(true)
+			unfrozen += 1
+	if unfrozen > 0 and OS.get_ticks_msec() >= unfrozenLogAt:
+		unfrozenLogAt = OS.get_ticks_msec() + 5000
+		Debug.l("COOP: RS fracturing rocks whose _process had stopped, restarted: %d" % unfrozen)
+		unfrozen = 0
 
 # ---------------------------------------------------------------- dev probe: rocks built onto ships
 
