@@ -125,6 +125,7 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 func _physics_process(delta):
+	_fitArm()
 	if mode == "claw":
 		_clawTick()
 		return
@@ -719,12 +720,31 @@ func _pickTarget() -> String:
 # The bot never changes a ship's loadout: that would mean writing CurrentGame.state.ship, which a save could persist.
 # Claw / frac modes need a dev save whose ship already carries a salvage arm, massdriver mode one with a mass driver
 # (dev3: SLOT_B=savegame-b.dv puts the TRTL, which has an EMD-14, on B).
+# Read-only loadout check. Weapon slots mount their systems when idle after ship setup (WeaponSlot.loadPlaceholder),
+# so wait until no slot is still a placeholder, then log every slot and whether an arm and an MPU are there:
+#   COOP: BOT loadout ship=<name> arm=<bool> mpu=<bool> slots=[slot=SYSTEM_X, ...]
 func _fitArm():
-	if armFitted or net.localShip == null or not is_instance_valid(net.localShip) or net.localShip.get("setup") != true:
+	var ship = net.localShip
+	if armFitted or ship == null or not is_instance_valid(ship) or ship.get("setup") != true:
 		return
+	var slots = []
+	if not _slots(ship, slots):
+		return   # a slot is still mounting
 	armFitted = true
-	if _arm() == null:
+	Debug.l("COOP: BOT loadout ship=%s arm=%s mpu=%s slots=%s" % [ship.name, _arm() != null, _mpu() != null, slots])
+	if _arm() == null and mode in ["claw", "frac"] and not noArm:
 		Debug.l("COOP: BOT %s: no salvage arm on this ship (the bot never changes a loadout); use a dev save that has one" % mode)
+
+func _slots(n, out) -> bool:
+	var done = true
+	for c in n.get_children():
+		if c.get("mounted") != null and c.get("slot") != null and c.has_method("loadPlaceholder"):
+			if c.get("system") == null and str(c.mounted) != "SYSTEM_NONE" and c.get_node_or_null(str(c.mounted)) is InstancePlaceholder:
+				done = false
+			out.append("%s=%s" % [c.slot, c.mounted])
+		elif not _slots(c, out):
+			done = false
+	return done
 
 func _arm():
 	var ship = net.localShip

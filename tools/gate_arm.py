@@ -88,6 +88,8 @@ def stop(label, gates):
     out = sh(["tools/stop.sh"], check=False)
     log("send the lead: windows closed for gate %s" % label)
     sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
+    if not gates:
+        return False
     m = re.search(r"logs kept in (\S+)", out)
     if not m:
         log("no kept logs from stop.sh; can't score")
@@ -125,9 +127,27 @@ def kill(inst):
     return False
 
 
+def loadout_ok(label, insts, mpu=False):
+    """Fail fast: every instance that loaded the arm save must log a loadout with the arm (and the MPU) mounted."""
+    got = wait_for(lambda: all(grep(i, r"COOP: BOT loadout ") for i in insts) and
+                   {i: grep(i, r"COOP: BOT loadout .*")[-1].group(0) for i in insts}, 120)
+    if not got:
+        log("no loadout line from %s within 2 min" % insts)
+    else:
+        for i, line in got.items():
+            log("%s %s" % (i, line))
+        if all("arm=True" in l and (not mpu or "mpu=True" in l) for l in got.values()):
+            return True
+        log("FAIL: %s does not have the %s mounted; stopping this phase" % (SLOT, "salvage arm and MPU" if mpu else "salvage arm"))
+    stop(label, "")
+    return False
+
+
 def phase2():
     arm = "--coop-slot=%s --coop-bot=frac,%d" % (SLOT, FRAC_N)
     launch("2r", {"A": arm, "B": arm})
+    if not loadout_ok("2r", "AB"):
+        return False
     done = wait_for(lambda: sum(len(grep(i, r"COOP: BOT frac trial=\d+ id=\S+ shards spawned=")) for i in "AB") >= FRAC_N, LIMIT, 10)
     log("fracture trials %s" % ("complete" if done else "cut at the time limit"))
     time.sleep(8)   # the last trial's member result
@@ -136,6 +156,8 @@ def phase2():
 
 def phase34(attempt):
     launch("3-4", {"C": "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT})
+    if not loadout_ok("3-4", "C"):
+        return "fail"
     held = wait_for(lambda: grep("C", r"COOP: BOT claw holding id=(\S+) .*mine=True"), LIMIT - 60)
     if not held:
         log("C never held a rock")
@@ -163,6 +185,8 @@ def phase34(attempt):
 
 def phase10():
     launch("10r", {"C": "--coop-slot=%s --coop-bot=mpu,%d" % (SLOT, MPU_N)})
+    if not loadout_ok("10r", "C", mpu=True):
+        return False
     wait_for(lambda: grep("C", r"COOP: BOT mpu done|COOP: BOT mpu: no MPU"), LIMIT, 10)
     time.sleep(35)   # a conservation line (every 30 s) after the last eat
     return stop("10r", "10r")
