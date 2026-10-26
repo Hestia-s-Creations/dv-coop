@@ -33,6 +33,9 @@ const PING_EVERY = 1.0
 const BEACON_HZ = 1.0
 const INTENT_HZ = 30.0
 const STATE_HZ = 20.0
+# Wire protocol version: bump on any incompatible packet change. hello carries it with the mod version and game
+# build, and peers that differ are turned away (review R10).
+const PROTO = 1
 const RANGE_PUPPET = 40000.0
 const RANGE_PUPPET_DROP = 45000.0
 const BEACON_TIMEOUT = 6.0
@@ -94,6 +97,9 @@ var statsAccum = 0.0
 # --- modules (M3+): packet type -> [object, method], called as method(from, msg) on the physics tick
 var handlers = {}
 
+# peers turned away by the hello check: id -> "name: why", for the friend list (review R10)
+var incompatible = {}
+
 func _ready():
 	for path in MODULES:
 		if not ResourceLoader.exists(path):
@@ -148,6 +154,8 @@ func _exit_tree():
 		_broadcast({"t": "bye"}, true)
 		if enet != null:
 			enet.poll()
+	if transport == Transport.STEAM and lobbyId != 0:
+		Steam.leaveLobby(lobbyId)
 	if ModLoader.has_meta("dvcoop"):
 		ModLoader.remove_meta("dvcoop")
 
@@ -470,7 +478,10 @@ func _onEnetServerGone():
 func _myName():
 	if transport == Transport.STEAM:
 		return Steam.getPersonaName()
-	return "%s-%d" % [OS.get_environment("USERNAME"), myId % 1000]
+	var user = OS.get_environment("USERNAME")
+	if user == "":
+		user = OS.get_environment("USER")
+	return "%s-%d" % [user, myId % 1000]
 
 func _peerSeen(id):
 	if not peers.has(id):
@@ -482,7 +493,11 @@ func _peerGone(id):
 		peers.erase(id)
 
 func _sendHello(peer):
-	_send(peer, {"t": "hello", "name": _myName(), "host": isHost, "dived": dived}, true)
+	_send(peer, {"t": "hello", "name": _myName(), "host": isHost, "dived": dived, "proto": PROTO, "mod": _modVersion(), "build": str(CurrentGame.get("version"))}, true)
+
+func _modVersion() -> String:
+	var root = get_parent()
+	return str(root.get("MOD_VERSION")) if root != null else "?"
 
 # Transport-level send. On ENet, clients can only talk to the server (1); anything for
 # another client goes through the server, which forwards by the envelope's "to".
@@ -553,7 +568,12 @@ func _physics_process(delta):
 		if pingTimer >= PING_EVERY:
 			pingTimer = 0.0
 			pingSeq += 1
-			pingSent[pingSeq] = OS.get_ticks_msec()
+			var t = OS.get_ticks_msec()
+			pingSent[pingSeq] = t
+			# one ping goes to every peer, so keep each entry until its pongs are in (or 5 s, if some are lost)
+			for seq in pingSent.keys():
+				if t - pingSent[seq] > 5000:
+					pingSent.erase(seq)
 			_broadcast({"t": "ping", "seq": pingSeq}, false)
 
 	_sessionTick(delta)
@@ -578,6 +598,8 @@ func _recvRaw(link, bytes: PoolByteArray):
 	if transport == Transport.ENET and isHost and env.has("to") and env.to != myId:
 		# relay client -> client
 		var to = env.to
+		if not peers.has(to):
+			return   # already gone
 		env.erase("to")
 		var reliable = env.get("rel", true)
 		env.erase("rel")
@@ -589,8 +611,34 @@ func _recvRaw(link, bytes: PoolByteArray):
 		return
 	_recv(env.f, env.m)
 
+# Field types of the core packets; a packet that doesn't match is dropped, not half-applied (review R26).
+const SHAPES = {
+	"peerlist": {"ids": TYPE_ARRAY},
+	"peergone": {"id": TYPE_INT},
+	"ping": {"seq": TYPE_INT},
+	"pong": {"seq": TYPE_INT},
+	"ship": {"cfg": TYPE_DICTIONARY},
+	"intent": {"s": TYPE_DICTIONARY},
+	"state": {"p": TYPE_VECTOR2, "r": TYPE_REAL, "v": TYPE_VECTOR2, "w": TYPE_REAL},
+}
+const BEACON_SHAPE = {"zone": TYPE_STRING, "p": TYPE_VECTOR2, "v": TYPE_VECTOR2, "r": TYPE_REAL}
+
+func _shaped(msg: Dictionary, shape: Dictionary, optional: bool) -> bool:
+	for k in shape:
+		if msg.has(k):
+			if typeof(msg[k]) != shape[k]:
+				return false
+		elif not optional:
+			return false
+	return true
+
 func _recv(from, msg: Dictionary):
-	if not msg.has("t"):
+	if not msg.has("t") or typeof(msg.t) != TYPE_STRING:
+		return
+	if (SHAPES.has(msg.t) and not _shaped(msg, SHAPES[msg.t], false)) or (msg.t == "beacon" and not _shaped(msg, BEACON_SHAPE, true)):
+		Debug.l("COOP: malformed %s from %s dropped" % [msg.t, from])
+		return
+	if incompatible.has(from) and msg.t != "hello":
 		return
 	match msg.t:
 		"peerlist":
@@ -600,16 +648,27 @@ func _recv(from, msg: Dictionary):
 		"peergone":
 			_peerGone(msg.id)
 		"hello":
+			var why = _incompatibility(msg)
+			if why != "":
+				if not incompatible.has(from):
+					Debug.l("COOP: HELLO from %s name=%s turned away: %s" % [from, msg.get("name"), why])
+				incompatible[from] = "%s: %s" % [msg.get("name"), why]
+				_peerGone(from)
+				emit_signal("session_changed")
+				return
+			incompatible.erase(from)
 			_peerSeen(from)
 			peers[from].name = str(msg.get("name"))
-			Debug.l("COOP: HELLO from %s name=%s host=%s dived=%s" % [from, msg.get("name"), msg.get("host"), msg.get("dived")])
+			Debug.l("COOP: HELLO from %s name=%s host=%s dived=%s mod=%s build=%s" % [from, msg.get("name"), msg.get("host"), msg.get("dived"), msg.get("mod"), msg.get("build")])
 		"ping":
 			_send(from, {"t": "pong", "seq": msg.seq}, false)
 		"pong":
 			var t0 = pingSent.get(msg.seq, -1)
 			if t0 >= 0:
-				stats.rtt_ms = OS.get_ticks_msec() - t0
-				pingSent.erase(msg.seq)
+				var rtt = OS.get_ticks_msec() - t0
+				stats.rtt_ms = rtt
+				if peers.has(from):
+					peers[from].rtt = rtt
 		"beacon":
 			_peerSeen(from)
 			peers[from].beacon = msg
@@ -639,6 +698,16 @@ func _recv(from, msg: Dictionary):
 				handlers[msg.t][0].call(handlers[msg.t][1], from, msg)
 			else:
 				Debug.l("COOP: unknown packet type %s" % msg.t)
+
+# "" when a hello's sender can play with us, else why not (shown in the friend list).
+func _incompatibility(msg: Dictionary) -> String:
+	if msg.get("proto") != PROTO:
+		return "different co-op protocol (%s, ours %d)" % [msg.get("proto", "none"), PROTO]
+	if str(msg.get("mod")) != _modVersion():
+		return "different mod version (%s, ours %s)" % [msg.get("mod"), _modVersion()]
+	if str(msg.get("build")) != str(CurrentGame.get("version")):
+		return "different game build (%s, ours %s)" % [msg.get("build"), CurrentGame.get("version")]
+	return ""
 
 func _puppetOf(id):
 	if peers.has(id):
@@ -754,7 +823,7 @@ func _sessionTick(delta):
 				if not pr.has("cfgAskedAt") or now - pr.cfgAskedAt > 2.0:
 					pr.cfgAskedAt = now
 					_send(id, {"t": "shipreq"}, true)
-			elif _puppetOf(id) == null and game != null:
+			elif _puppetOf(id) == null and game != null and now - pr.get("spawnFailedAt", -9.0) > 1.0:
 				_spawnPuppet(id, game)
 		else:
 			if pr.inRange:
@@ -820,7 +889,8 @@ func _spawnPuppet(id, game):
 		pr.puppet = ship
 		Debug.l("COOP: puppet '%s' for %s spawned at %s" % [ship.name, pr.name, CurrentGame.globalCoords(ship.global_position)])
 	else:
-		Debug.l("COOP: puppet spawn for %s failed (no free spot), retrying" % pr.name)
+		Debug.l("COOP: puppet spawn for %s failed (no free spot), retrying in 1 s" % pr.name)
+		pr.spawnFailedAt = OS.get_ticks_msec() / 1000.0
 		ship.free()
 
 var overlay = null

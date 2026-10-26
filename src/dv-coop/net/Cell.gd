@@ -89,7 +89,8 @@ var devSlipClock = 0.0
 
 func _ready():
 	name = "Cell"
-	# Run after BulletTimer and the rest of the game so the time-scale pin has the last word each tick.
+	# Run after the stock BulletTimer node (res://BulletTimer.gd drives Engine.time_scale every physics frame) and the
+	# rest of the game, so the pin to 1.0 has the last word each tick.
 	process_priority = 1000
 	net.on("c.state", self, "_onState")
 	net.on("c.join", self, "_onJoin")
@@ -572,10 +573,15 @@ func _onState(from, msg):
 	if _isResigned(from, msg):
 		_log("late c.state from %s for resigned cell %s ignored" % [from, msg.cid])
 		return
+	if not (msg.get("members") is Array) or typeof(msg.get("cid")) != TYPE_STRING:
+		_log("malformed c.state from %s ignored" % from)
+		return
 	_heard(from)
 	_noteAd(from, msg)
 	if role == Role.SOLO and _inCutscene():
 		return   # join once the dive cutscene is over; the authority resends c.state every 2 s
+	if _ship() == null:
+		return   # in flight at the station or on the title: never adopt a cell's origin there (review R5)
 	var listed = msg.members
 	if not listed.has(net.myId):
 		if role == Role.MEMBER and from == auth:

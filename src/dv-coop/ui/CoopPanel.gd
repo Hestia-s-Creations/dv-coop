@@ -158,7 +158,7 @@ func _refresh():
 	var mkey = []
 	for m in members:
 		mkey.append([m.name, m.zone])
-	var key = str([net.state if net != null else "", friends, mkey, pending, slots])
+	var key = str([net.state if net != null else "", friends, mkey, pending, slots, net.incompatible if net != null else {}])
 	if key == shown:
 		# same layout: only the ranges moved
 		for i in range(min(members.size(), memberLabels.size())):
@@ -213,6 +213,9 @@ func _refresh():
 			inv.disabled = net == null or not net.inLobby() or net.devEnet != ""
 			_button(row, "leave", "Leave", "_onLeave", [])
 
+	if net != null:
+		for why in net.incompatible.values():
+			_label("  %s" % why)
 	if not members.empty():
 		_label("In your lobby:")
 		for m in members:
