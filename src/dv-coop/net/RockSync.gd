@@ -52,7 +52,7 @@ var logAccum = 0.0
 var screenDump = false     # dev: DVCOOP_RS_SCREEN=1 also logs the camera transform and every rock on screen
 var puppetProbe = false   # dev: DVCOOP_RS_PUPPETS=1 logs rock clearance around ships after a snapshot, and hull impacts
 var probeUntil = 0
-var mineralLog = 0         # dev: DVCOOP_RS_MINERALS=1 logs the first few minerals sent (authority) / built (member)
+var mineralLog = 0         # dev: DVCOOP_RS_MINERALS=1 (or =N) logs the first 5 (N) minerals sent (authority) / built (member)
 var logEvery = LOG_EVERY   # dev: DVCOOP_RS_SAMPLE=<seconds> logs the RS line (and its nearest-rock samples) that often
 var sent = {"s": 0, "d": 0, "u": 0, "bytes": 0, "defer": 0}
 var lastGen = -1     # authority: origin generation the receivers' sleep marks belong to
@@ -71,7 +71,8 @@ func _ready():
 		Debug.l("COOP: RS logging every %.1f s (DVCOOP_RS_SAMPLE)" % logEvery)
 	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
 	puppetProbe = OS.get_environment("DVCOOP_RS_PUPPETS") == "1"
-	mineralLog = 5 if OS.get_environment("DVCOOP_RS_MINERALS") == "1" else 0
+	var ml = OS.get_environment("DVCOOP_RS_MINERALS")   # "1": the first 5; a larger number: that many
+	mineralLog = 5 if ml == "1" else max(0, int(ml))
 	# coop:dev}
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")

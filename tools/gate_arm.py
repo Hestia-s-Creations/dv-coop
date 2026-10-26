@@ -4,22 +4,29 @@ Usage: DV_WHO=<you> python tools/gate_arm.py [2] [34] [10]      (default: all th
 
 Needs the dev slot savegame-arm.dv (a ship with a salvage arm for 2 and 34, an MPU for 10) in the main dev data dir
 (~/dvcoop-data/dV; dv_seed copies it to the other instances). It is a copy of Tim's slot d (TRTL: SALVAGE_ARM, MPU,
-DND_HAUL). Only B and C ever load it: they run on seeded temp copies, while A runs on ~/dvcoop-data itself, so a stock
-save there (a tug rescue ends the dive and saves) would change the dev data. Each phase is one tools/dev3.sh run
+DND_HAUL). A never loads it: B and C run on seeded temp copies, while A runs on ~/dvcoop-data itself, so a stock save
+there (a tug rescue or an escape to Enceladus ends the dive and saves) would change the dev data. Where A needs the arm
+(phase 34) it loads SLOT_A, a throwaway copy made fresh before each launch. Each phase is one tools/dev3.sh run
 (relay + 3 players, 4 windows), kept under 10 minutes, then tools/stop.sh (which keeps the logs), tools/savecheck.sh
 before/after, and tools/gate_m4.py on the kept logs:
   2   gate 2r   every instance runs --coop-bot=frac,N (whichever forms the cell coordinates); B and C load the arm
                 save and reach with their arms when they are members.
-  34  gates 3,4 B and C load the arm save and run --coop-bot=claw,1,hold; each member among them locks a rock its arm
+  34  gates 3,4 A (on SLOT_A), B and C run --coop-bot=claw,1,hold; each member among them locks a rock its arm
                 takes (the salvage arm's stock mineral filter) and holds it. Gate 4 hard-kills the cell authority when a
                 surviving holder is not the peer promoted in its place (the next-lowest id), which then must adopt that
                 rock from o.list while the holder keeps holding; then gate 3 hard-kills that holder (the new authority
-                re-owns within 2 s). If the authority is A, both B and C hold and gate 4 always stages; if it is B or C,
-                it stages when A's id is below the other arm member's. Otherwise gate 3 only, and it relaunches (3 tries).
+                re-owns within 2 s). With all three holding, both survivors hold and one of them is not promoted, so gate
+                4 stages whatever the ids (with only B and C, runs 060224/060756/061503 drew B as authority and C as next
+                three times). Otherwise gate 3 only, and it relaunches (3 tries).
   10  gate 10r  C loads the arm save and runs --coop-bot=mpu,N: the stock MPU claims, processes and frees rocks.
 Announce every launch to the lead first (game window rules); this script prints the line to send.
+
+Every launch (here and in m4_final.py) first checks the master dev saves (~/dvcoop-data/dV/savegame*.dv, which dev3
+seeds B and C from) against MASTER, a sha1 manifest beside dV/, and refuses to launch, naming the file, if one differs
+or is new or missing: a stock save on A must never spread to the other instances (run 063348). Record the manifest
+once the masters are known good:  python tools/gate_arm.py --record-master
 """
-import os, re, subprocess, sys, time, glob
+import hashlib, json, os, re, shutil, subprocess, sys, time, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WHO = os.environ.get("DV_WHO", "")
@@ -27,6 +34,8 @@ WIN = os.name == "nt"
 DATA = os.path.expanduser(os.environ.get("DV_DATA", "~/dvcoop-data"))
 INST = os.path.expanduser(os.environ.get("DV_INST", "~/AppData/Local/Temp" if WIN else "/tmp"))
 SLOT = "savegame-arm.dv"
+MASTER = os.path.join(DATA, "master-saves.json")   # name -> sha1 of every known-good master save (beside dV/, not seeded)
+SLOT_A = "savegame-arm-a.dv"   # A's throwaway copy of SLOT (phase 34): a stock save on A lands here, never in SLOT
 DIVE_X, DIVE_Y, OFF_B, OFF_C = 150000, 0, 1200, 60000
 BASE = {"DIVE_X": str(DIVE_X), "DIVE_Y": str(DIVE_Y), "OFF_B": str(OFF_B), "WARP_C": "60", "WARP_C_DIST": "900"}
 LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop_instB", "dV", "logs"),
@@ -110,7 +119,37 @@ def at_arm_dive(fn):
     return run
 
 
+def _masters():
+    """name -> sha1 of each master save, A's throwaway copy left out (it is remade from SLOT before every use)."""
+    out = {}
+    for f in sorted(glob.glob(os.path.join(DATA, "dV", "savegame*.dv"))):
+        if os.path.basename(f) != SLOT_A:
+            out[os.path.basename(f)] = hashlib.sha1(open(f, "rb").read()).hexdigest()
+    return out
+
+
+def record_master():
+    json.dump(_masters(), open(MASTER, "w"), indent=1, sort_keys=True)
+    print("recorded %d master saves -> %s" % (len(_masters()), MASTER))
+
+
+def check_master():
+    """Refuse to launch on a master save that differs from the manifest (or with no manifest at all)."""
+    if not os.path.exists(MASTER):
+        raise SystemExit("no master save manifest %s: check the masters, then python tools/gate_arm.py --record-master"
+                         % MASTER)
+    want, now = json.load(open(MASTER)), _masters()
+    bad = ["%s %s" % (n, "missing" if n not in now else "new" if n not in want else "changed (%s, manifest %s)"
+                      % (now[n][:8], want[n][:8])) for n in sorted(set(want) | set(now)) if want.get(n) != now.get(n)]
+    if bad:
+        raise SystemExit("refusing to launch: master dev save(s) in %s differ from %s: %s. Restore each to its manifest "
+                         "hash (not blindly from <slot>.dvb: the game renames the previous save there on every save, so "
+                         "after two saves it is a bad one too, run 063348) or re-record if the change is intended."
+                         % (os.path.join(DATA, "dV"), MASTER, "; ".join(bad)))
+
+
 def launch(label, extra):
+    check_master()   # before announcing: a refused launch opens no windows
     log("send the lead: launching 4 windows ~10 min for gate %s" % label)
     sh(["tools/dev3.sh"], dict(BASE, **{"EXTRA_" + k: v for k, v in extra.items()}))
     sh(["tools/savecheck.sh", "before", "arm-" + label])
@@ -120,23 +159,58 @@ KILLS = []    # [(peer id, wall ms just before the kill)] in this run; stop() wr
 SCORES = {}   # gate -> passed, from the last stop()
 
 
+HEALTH = []   # every run's ship/save failures (ship_health); any of them fails the whole gate_arm / m4_final run
+
+
+def ship_health(run, savecheck, label):
+    """Run 081334: a bot ship went dry (helpless), the stock rescue tow docked it home and saved its seeded slot. Any
+    "COOP: BOT ship ... helpless=True" or "COOP: BOT ship draining" line is a FAIL, and so is a savecheck diff (M4
+    phases never save); the changed saves are copied next to the kept logs before the next launch reseeds them.
+    Returns the failures (also appended to HEALTH)."""
+    bad = []
+    for f in sorted(glob.glob(os.path.join(run, "*", "dV", "logs", "dv_log_*.txt")) if run else []):
+        inst = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(f))))
+        for ln in open(f, encoding="utf-8", errors="replace"):
+            if "COOP: BOT ship draining" in ln or re.search(r"COOP: BOT ship remass=.* helpless=True", ln):
+                bad.append("%s: %s" % (inst, ln.strip()))
+                break
+    if "savecheck: PASS" not in savecheck:
+        changed = re.findall(r"^\s+(\S+\.dv)\s+\S+ -> \S+", savecheck, re.M)
+        bad.append("savecheck: %s" % (", ".join(changed) or "output not understood"))
+        if run:
+            keep = os.path.join(run, "saves-changed")
+            os.makedirs(keep, exist_ok=True)
+            for c in changed:
+                if WIN and re.match(r"^/([a-zA-Z])/", c):
+                    c = c[1].upper() + ":" + c[2:]
+                if os.path.exists(c):
+                    shutil.copy(c, os.path.join(keep, os.path.basename(os.path.dirname(os.path.dirname(c)))
+                                                + "_" + os.path.basename(c)))
+    for b in bad:
+        log("FAIL ship/save health (%s): %s" % (label, b))
+    HEALTH.extend(bad)
+    return bad
+
+
 def stop(label, gates):
-    """Close the run, keep its logs (with kills.txt), and score each gate on its own; True when all of them pass."""
+    """Close the run, keep its logs (with kills.txt), and score each gate on its own; True when all of them pass and
+    the ships and saves are healthy (ship_health)."""
     out = sh(["tools/stop.sh"], check=False)
     log("send the lead: windows closed for gate %s" % label)
-    sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
+    sc = sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
     kills = list(KILLS)
     del KILLS[:]
     SCORES.clear()
+    m = re.search(r"logs kept in (\S+)", out)
+    run = m.group(1) if m else None
+    if run and WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
+        run = run[1].upper() + ":" + run[2:]
+    healthy = not ship_health(run, sc, label)
     if not gates:
         return False
-    m = re.search(r"logs kept in (\S+)", out)
-    if not m:
+    if not run:
         log("no kept logs from stop.sh; can't score")
         return False
-    run = m.group(1)
-    if WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
-        run = run[1].upper() + ":" + run[2:]
     if kills:
         # gate 3 measures kill -> reown from these (the game logs whole seconds; Own's reown line carries wall ms)
         with open(os.path.join(run, "kills.txt"), "w") as f:
@@ -146,7 +220,7 @@ def stop(label, gates):
     for g in gates.split(","):
         r = subprocess.run([sys.executable, "tools/gate_m4.py", "--gates", g] + logs, cwd=ROOT)
         SCORES[g] = r.returncode == 0
-    return all(SCORES.values())
+    return all(SCORES.values()) and healthy
 
 
 def wait_for(cond, limit, every=5):
@@ -213,39 +287,47 @@ def phase2():
 HOLD_FRESH = 3.0   # s: the claw bot logs "holding" every second, at whole-second resolution
 
 
-# The stock salvage arm often lets go of a fresh grab on its own 2-4 s after locking ("Switching [..] from invalid
-# target"), with or without anything happening in the cell (seen in runs 005702, 014836, 015627; 014836 dropped a
-# minute before any kill). A hold that has lasted HOLD_STABLE lines (one a second) is past that and lasts (012422: 30 s).
+# The stock salvage arm lets go of a fresh grab on its own a few seconds after locking ("Switching [..] from invalid
+# target"; runs 005702, 014836, 015627, 051003): it re-checks its mineral filter every frame (DockingArm.isValidTarget,
+# pickupOnlyMineralTargets), and ship.isValidMineralTarget passes a rock the lidar hasn't identified yet on albedo
+# alone, then drops it once identified (hud/MineralMark) unless it holds a wanted mineral worth the min value. So a
+# hold is final only once the rock is identified down to its value and still passes: the bot logs identified=value
+# takes=True. A hold counts after HOLD_STABLE such lines (one a second).
 HOLD_STABLE = 5
 
 
 def holding(inst, stable=1):
     """The rock id this instance holds right now: its last `stable` claw "holding" lines are all for one rock, locked
-    in the arm and owned (haul drones and the hold also claim; they don't count), the latest at most HOLD_FRESH s old.
-    None otherwise."""
-    rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)")
+    in the arm and owned (haul drones and the hold also claim; they don't count), identified down to its value and
+    passing the arm's mineral filter, the latest at most HOLD_FRESH s old. None otherwise."""
+    rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)"
+                      r"(?: identified=(\w+) takes=(\w+))?")
     if len(rows) < stable:
         return None
     last = rows[-stable:]
     t = time.mktime(time.strptime(last[-1].group(1), "%Y/%m/%d %H:%M:%S"))
     if time.time() - t > HOLD_FRESH:
         return None
-    if any(r.group(2) != last[-1].group(2) or r.group(3) != "True" or r.group(4) != "True" for r in last):
+    if any(r.group(2) != last[-1].group(2) or r.group(3) != "True" or r.group(4) != "True"
+           or r.group(5) != "value" or r.group(6) != "True" for r in last):
         return None
     return last[-1].group(2)
 
 
 @at_arm_dive
 def phase34(attempt):
-    # B and C both load the arm save and hold a rock (whichever of them is a member). Gate 4 needs a holder that
-    # survives the authority's kill and is not the peer promoted in its place (the next-lowest id), so wait for both
-    # holders, then pick the kill order from the ids; only when no holder qualifies does it fall back to gate 3 alone.
+    # A, B and C all load the arm save and hold a rock (whichever of them are members). Gate 4 needs a holder that
+    # survives the authority's kill and is not the peer promoted in its place (the next-lowest id): with all three
+    # holding, the two survivors both hold and one of them is not promoted, whatever the ids (with only B and C holding,
+    # runs 060224/060756/061503 drew B as authority and C as next three times: gate 4 could not be staged).
     # Returns {"3": passed, "4": passed}, with None for a gate this launch could not stage.
-    hold = "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT
-    launch("3-4", {"B": hold, "C": hold})
-    if not loadout_ok("3-4", "BC"):
+    hold = "--coop-slot=%s --coop-bot=claw,1,hold"
+    # run 063348: A on SLOT itself saved over the dev master after a stock escape to Enceladus; A gets a fresh copy
+    shutil.copyfile(os.path.join(DATA, "dV", SLOT), os.path.join(DATA, "dV", SLOT_A))
+    launch("3-4", {"A": hold % SLOT_A, "B": hold % SLOT, "C": hold % SLOT})
+    if not loadout_ok("3-4", "ABC"):
         return {"3": False, "4": False}
-    if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
+    if not wait_for(lambda: holding("A") or holding("B") or holding("C"), LIMIT - 120):   # A holds too (run 090808)
         log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
         stop("3-4", "")
         return {"3": None, "4": None}
@@ -300,6 +382,9 @@ def phase10():
 
 
 def main(argv):
+    if argv[:1] == ["--record-master"]:
+        record_master()
+        return 0
     if not WHO:
         raise SystemExit("set DV_WHO (the game lock holder name)")
     if not os.path.exists(os.path.join(DATA, "dV", SLOT)):
@@ -325,6 +410,7 @@ def main(argv):
             res["4"] = bool(got["4"])
         elif p == "10":
             res["10r"] = phase10()
+    res["ship/save health"] = not HEALTH
     log("summary: %s" % res)
     return 0 if all(v in (True, "ok") for v in res.values()) else 1
 

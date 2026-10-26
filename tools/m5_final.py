@@ -106,6 +106,7 @@ def run_phase(name):
         if os.path.exists(f) and os.path.isdir(d):
             shutil.copy(f, d)
     saves_ok = _saves_ok(after, name)
+    saves_ok = not ga.ship_health(run, "savecheck: PASS", "m5-" + name) and saves_ok   # helpless / draining bot ships
     files = glob.glob(os.path.join(run, "*", "dV", "logs", "*.txt"))
     sys.stdout.flush()   # our lines first, then gate_m5's (it writes straight to the console)
     r = subprocess.run([sys.executable, "tools/gate_m5.py", "--gates", gates] + files, cwd=ga.ROOT)
