@@ -12,10 +12,27 @@ Exit 1 if any selected gate fails.
 import sys, re, glob, os, time
 
 
+def group(files):
+    """One entry per instance: the game rotates a long log into dv_log_0.txt, dv_log_1.txt, ... in the same folder, so
+    those are joined (oldest first); any other file stays on its own."""
+    out, rot = [], {}
+    for f in files:
+        if re.match(r"dv_log_\d+\.txt$", os.path.basename(f)):
+            rot.setdefault(os.path.dirname(os.path.abspath(f)), []).append(f)
+        else:
+            out.append([f])
+    for d, fs in rot.items():
+        out.append(sorted(fs, key=lambda f: (os.path.getmtime(f), f)))
+    return sorted(out)
+
+
 class Instance:
     def __init__(self, path):
-        self.path = path
-        self.lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+        paths = path if isinstance(path, list) else [path]
+        self.path = paths[0]
+        self.lines = []
+        for p in paths:
+            self.lines += open(p, encoding="utf-8", errors="replace").read().splitlines()
         # the ENet id when there is one: every dev instance also logs "Steam ready" with the same shared Steam id
         enet = [m.group(1) for m in (re.search(r"COOP: ENet connected to server, I am (\d+)", l) for l in self.lines) if m]
         steam = [m.group(1) for m in (re.search(r"Steam ready, I am (\d+)", l) for l in self.lines) if m]
@@ -197,6 +214,7 @@ def gate9c(insts):
 # ---------------------------------------------------------------- Own track (gates 1-6, 10; tim-58)
 
 import datetime
+import time
 
 
 def _ts(line):
@@ -244,11 +262,23 @@ def gate2(insts, arm=False):
         key = r[2]
         # a real arm's chase notes "[n shards seen, m this arm takes]": a salvage arm only locks rocks the ship's
         # mineral filter passes, so shards it can't take leave nothing to grab, like a fracture with no shards
-        takes = re.search(r"\[\d+ shards seen, (\d+) this arm takes\]", r[3])
+        takes = re.search(r"\[\d+ shards seen, (\d+) this arm takes", r[3])
+        # shards another member's arm got first (this claim denied "held", the other's trial ended holding it): one
+        # owner per shard, which is the race itself
+        # The deny must fall inside this trial's shard chase (after its "reaching for a shard", before its result).
+        inst = [i for i in insts if i.name() == r[0]][0]
+        chase = [k for k, l in enumerate(inst.lines) if re.search(r"COOP: BOT frac trial=%s .*reaching for a shard" % r[1], l)]
+        end = [k for k, l in enumerate(inst.lines) if re.search(r"COOP: BOT frac trial=%s .*result=" % r[1], l)]
+        window = inst.lines[chase[-1]:end[-1]] if chase and end and chase[-1] < end[-1] else []
+        held = sorted(set(m.group(1) for i in insts if i is not inst
+                          for m in i.grep(r"COOP: BOT frac trial=%s id=\S+ result=shards \(holding (\S+)\)" % r[1])
+                          if any(re.search(r"COOP: OWN denied %s \(held\)" % re.escape(m.group(1)), l) for l in window)))
         if key == "neither" and spawned.get(r[1]) == 0:
             key = "neither (fracture spawned no shards: stock)"
         elif key == "neither" and takes and int(takes.group(1)) == 0:
             key = "neither (no shard this arm takes: stock mineral filter)"
+        elif key == "neither" and takes and held and int(takes.group(1)) <= len(held):
+            key = "neither (every shard this arm takes went to another arm first)"
         elif key not in ("rock", "shards"):
             bad.append(r)
         counts[key] = counts.get(key, 0) + 1
@@ -334,37 +364,107 @@ def gate4(insts):
 
 def _dmg(insts):
     rows = []
-    rx = r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
+    # relayed/lost (newer builds): hits that reached a peer who no longer owned the rock, passed on / given up
+    rx = (r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
+          r"(?: totalEnergy=\S+ relayed=(\d+) lost=(\d+)/([\d.]+)(?: gone=(\d+)/([\d.]+))?(?: held=(\d+) hops<=(\d+))?)?")
     for i in insts:
         for m in i.grep(rx):
-            rows.append((i.name(),) + m.groups())
+            rows.append((i.name(),) + m.groups()[:9] + (_ts(m.string),) + tuple(m.groups()[9:]))
     return rows
+
+
+# A forward line sums the hits of its last 5 s; the owner applies them on arrival and logs them in its own next 5 s
+# line. Near the end of a run one side's log stops before the other side's next line, so lines from the last
+# DMG_TAIL_S s before the first log ends (the run stopping) are reported but only bound the check.
+DMG_TAIL_S = 12
+DMG_MAX_HOPS = 2   # relays per hit: the stale owner passes it on once, and whoever our table names holds it until it moves
 
 
 def gate5(insts):
     """Beams: every beam hit a shooter forwards is applied once, on the rock's owner, and never on a copy."""
-    fwd = {}
-    app = {}
+    ends = [max([t for t in map(_ts, i.lines[-50:]) if t] or [0]) for i in insts]
+    cut = min(ends) - DMG_TAIL_S if ends else 0
+    # per rock id: [fwd n, fwd e, applied n, applied e] in time, and the same for the tail
+    st = {}
+    tail = {}
     copy_applied = []
+    relayed = 0
+    lost = []
+    gone = {}   # rock id -> hits that arrived after the rock broke / was eaten on its owner (count as delivered)
+    held = 0
+    hops = []   # rows whose hits took more than DMG_MAX_HOPS relays (a hit goes shooter -> stale owner -> owner)
     for r in _dmg(insts):
+        held += int(r[16] or 0)
+        if int(r[17] or 0) > DMG_MAX_HOPS:
+            hops.append(r)
         _, rid, owner, here, fn, fe, an, ae = r[:8]
-        f = fwd.setdefault(rid, [0, 0.0])
-        a = app.setdefault(rid, [0, 0.0])
-        f[0] += int(fn)
-        f[1] += float(fe)
-        a[0] += int(an)
-        a[1] += float(ae)
+        relayed += int(r[11] or 0)
+        if int(r[12] or 0):
+            lost.append(r)
+        if int(r[14] or 0):
+            gone[rid] = gone.get(rid, 0) + int(r[14])
+            an = int(an) + int(r[14])
+            ae = float(ae) + float(r[15])
+        g = (tail if r[10] is not None and r[10] > cut else st).setdefault(rid, [0, 0.0, 0, 0.0])
+        st.setdefault(rid, [0, 0.0, 0, 0.0])
+        tail.setdefault(rid, [0, 0.0, 0, 0.0])
+        g[0] += int(fn)
+        g[1] += float(fe)
+        g[2] += int(an)
+        g[3] += float(ae)
         if here == "copy" and int(an):
             copy_applied.append(r)
-    ids = sorted(k for k in fwd if fwd[k][0] or app[k][0])
+    ids = sorted(k for k in st if any(st[k]) or any(tail[k]))
     if not ids:
         return False, ["FAIL: no forwarded beam hits (run with --coop-bot=laser,N)"]
-    bad = [k for k in ids if fwd[k][0] != app[k][0] or abs(fwd[k][1] - app[k][1]) > 1.0]
+
+    def ok(k):
+        f, t = st[k], tail[k]
+        if not any(t):
+            return f[0] == f[2] and abs(f[1] - f[3]) <= 1.0
+        # every hit forwarded in time was applied by the end, and every hit applied in time was forwarded by the end
+        return (f[0] <= f[2] + t[2] and f[2] <= f[0] + t[0]
+                and f[1] <= f[3] + t[3] + 1.0 and f[3] <= f[1] + t[1] + 1.0)
+
+    # a hit may only be written off as "gone" on a rock that really broke: some instance logged it as a fracture parent
+    broke = set()
+    for i in insts:
+        for m in i.grep(r"COOP: OWN o\.new.* parents \[([^\]]*)\]"):
+            broke.update(x.strip() for x in m.group(1).split(",") if x.strip())
+    gone_bad = sorted(k for k in gone if k not in broke)
+    bad = [k for k in ids if not ok(k)]
+    scored = [k for k in ids if st[k][0] or st[k][2]]
     ev = ["%d rocks hit; forwarded = applied on %d" % (len(ids), len(ids) - len(bad))]
-    ev += ["%s: forwarded %d/%.0f, applied %d/%.0f%s" % (k, fwd[k][0], fwd[k][1], app[k][0], app[k][1], "  FAIL" if k in bad else "")
-           for k in ids[:12]]
+    ev.append("tail: lines after %s (the first log end %s - %d s) only bound the check; every line before is scored exactly" % (
+        time.strftime("%H:%M:%S", time.localtime(cut)), time.strftime("%H:%M:%S", time.localtime(min(ends))), DMG_TAIL_S))
+    ev += ["%s: forwarded %d/%.0f, applied %d/%.0f%s%s" % (
+        k, st[k][0] + tail[k][0], st[k][1] + tail[k][1], st[k][2] + tail[k][2], st[k][3] + tail[k][3],
+        " (last %d s: forwarded %d, applied %d; the run stopped before both sides logged them)" % (DMG_TAIL_S, tail[k][0], tail[k][2])
+        if any(tail[k]) else "", "  FAIL" if k in bad else "") for k in ids[:12]]
+    if not scored:
+        bad.append("(tail only)")
+        ev.append("FAIL: every hit came in the last %d s of the run" % DMG_TAIL_S)
+    # relay staging (--coop-dev-dmg-delay on a shooter, laser,N,claim): hits must cross an ownership change and be relayed
+    staged = any(i.count(r"COOP: OWN dev: forwarded hits held") for i in insts)
+    claims = sum(i.count(r"COOP: BOT laser trial=\d+ id=\S+ claim result=owned") for i in insts)
+    # held-hit staging (--coop-dev-rel-delay): some relayed hits must reach a peer whose table still names the relayer
+    held_staged = any(i.count(r"COOP: OWN dev: o\.rel held") for i in insts)
+    ev.append("hits relayed to a rock's new owner (in flight across an ownership change): %d%s" % (relayed,
+        "" if not staged else "; relay staged (forwarded hits delayed), %d mid-trial claims owned%s" % (
+            claims, "" if relayed >= 1 else "  FAIL (staged, but no hit was relayed)")))
     ev += ["FAIL applied on a copy: %s" % (r,) for r in copy_applied[:5]]
-    return not bad and not copy_applied, ev
+    ev += ["FAIL hits lost (no owner reachable): %s" % (r,) for r in lost[:5]]
+    ev.append("hits held for a stale owner until the table moved on: %d; relays per hit at most %d (limit %d)" % (
+        held, max([int(r[17] or 0) for r in _dmg(insts)] or [0]), DMG_MAX_HOPS))
+    ev += ["FAIL more than %d relays: %s" % (DMG_MAX_HOPS, r) for r in hops[:5]]
+    bad += ["hops"] if hops else []
+    if held_staged and held < 1:
+        ev.append("FAIL: held-hit staging ran (o.rel delayed), but no hit was held")
+        bad.append("held")
+    ev += ["%s: %d hits arrived after the rock broke (counted as applied)%s" % (
+        k, gone[k], "  FAIL (no fracture of it was logged)" if k in gone_bad else "") for k in sorted(gone)]
+    bad += gone_bad
+    return not bad and not copy_applied and not lost and (not staged or relayed >= 1), ev
 
 
 def gate6(insts):
@@ -490,30 +590,53 @@ def _mpuDuplicates(insts):
     return out
 
 
+HAUL_MIN_TRIALS = 3
+
+
 def gatehaul(insts):
-    """Haul drones: a member's haul drones claim the rock they push (touch-to-own) and move it to their excavator (or
-    the MPU eats it); no trial hauls a rock it never owned; conservation and the ore audit hold (gate 10)."""
+    """Haul drones: every valid haul trial ends with the rock flown in (or eaten) while the member owned it (touch-to-
+    own); at least HAUL_MIN_TRIALS valid trials ran; no rock moved without being owned; conservation and the ore audit
+    hold (gate 10). A trial is valid when its placed line shows a target the stock plant takes: past the drones'
+    fly-in zone, through the plant's mineral filter, and the stock scanForTarget check at placement >= 3x the plant's
+    cut ("placed (offset .. px, stock check c vs cut k, valid=True"). Any other trial is a setup miss: reported, never
+    counted toward a pass."""
+    placed = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT haul trial=(\d+) id=(\S+) d0=(-?\d+) placed(?: \(offset \d+ px, stock check (\d+) vs cut (\d+), valid=(\w+))?"):
+            # valid: the stock scanForTarget check at placement clears 3x the plant's cut (DevBot HAUL_MIN_CHECK)
+            placed[(i.name(), m.group(1))] = m.group(6) == "True" and float(m.group(4)) >= 3 * float(m.group(5))
     rows = [(i.name(),) + m.groups() for i in insts
             for m in i.grep(r"COOP: BOT haul trial=(\d+) id=(\S+) result=(\S+) owned=(\w+) d0=(-?\d+) d1=(-?\d+)")]
     if not rows:
         none = sum(i.count(r"COOP: BOT haul: no haul drones") for i in insts)
+        idle = [i.name() for i in insts if i.count(r"COOP: BOT haul idle: this instance is the cell authority")]
+        if idle and not none:
+            return False, ["FAIL: no member ran the bot (cell authority idle: %s); stage the haul bot on two instances" % idle]
         return False, ["FAIL: no haul trials%s (run --coop-bot=haul,N on a member with SYSTEM_DND_HAUL)" % (
             " (no haul drones on the bot's ship)" if none else "")]
-    good = [r for r in rows if r[3] in ("eaten", "closer") and r[4] == "True"]
+    valid = [r for r in rows if placed.get((r[0], r[1]))]
+    misses = [r for r in rows if not placed.get((r[0], r[1]))]
+    good = [r for r in valid if r[3] in ("eaten", "closer") and r[4] == "True"]
+    failed = [r for r in valid if r not in good]
     unowned = [r for r in rows if r[3] in ("eaten", "closer") and r[4] != "True"]
     ok10, ev10 = gate10(insts) if any(i.grep(r"COOP: OWN eat ") for i in insts) else (True, ["no eats (ore audit not needed)"])
-    counts = {}
-    for r in rows:
-        counts[r[3]] = counts.get(r[3], 0) + 1
-    ev = ["%d haul trials: %s; moved or eaten while owned: %d" % (len(rows), counts, len(good))]
-    ev += ["%s trial %s %s: %s owned=%s %s -> %s px" % r for r in rows[:10]]
+    ev = ["%d haul trials: %d valid, %d hauled while owned; %d setup misses (no valid target: not counted)" % (
+        len(rows), len(valid), len(good), len(misses))]
+    ev += ["%s trial %s %s: %s owned=%s %s -> %s px%s" % (r + ("" if r in valid else "  (setup miss)",)) for r in rows[:10]]
+    ev += ["FAIL valid trial not hauled while owned: %s trial %s %s (%s owned=%s)" % (r[0], r[1], r[2], r[3], r[4])
+           for r in failed[:5]]
     ev += ["FAIL moved a rock it never owned: %s trial %s" % (r[0], r[1]) for r in unowned[:5]]
     ev += ["gate 10: " + e for e in ev10]
-    if not good:
-        ev.append("FAIL: no rock was hauled while owned")
+    solo = [(i.name(),) + m.groups() for i in insts
+            for m in i.grep(r"COOP: BOT haul-solo trial=(\d+) id=(\S+) result=(\S+) owned=\w+ d0=(-?\d+) d1=(-?\d+)")]
+    if solo:
+        ev.append("stock baseline (not scored): %d solo trials, closer %d: %s" % (
+            len(solo), sum(1 for r in solo if r[3] == "closer"), ", ".join("%s %s->%s" % (r[3], r[4], r[5]) for r in solo[:5])))
+    if len(valid) < HAUL_MIN_TRIALS:
+        ev.append("FAIL: %d valid trials, need %d" % (len(valid), HAUL_MIN_TRIALS))
     dup = _mpuDuplicates(insts)
     ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
-    return bool(good) and not unowned and ok10 and not dup, ev
+    return len(valid) >= HAUL_MIN_TRIALS and not failed and not unowned and ok10 and not dup, ev
 
 
 SHARD_WINDOW = 3.0   # s after a member reports a fracture parent in which its shards follow (stock: one per frame, <= 2 s)
@@ -723,7 +846,7 @@ def main(argv):
     if not files:
         print(__doc__)
         return 1
-    insts = [Instance(f) for f in files]
+    insts = [Instance(fs) for fs in group(files)]
     print("instances: %s" % ", ".join(i.name() for i in insts))
     errors = [(i.name(), i.count(r"SCRIPT ERROR")) for i in insts if i.count(r"SCRIPT ERROR")]
     failed = False

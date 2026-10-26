@@ -33,7 +33,7 @@ var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run w
 var born = []         # member: ids of rocks born in our field (fracture shards of rocks we own), sent next tick
 var fractured = {}    # member: ids of rocks we owned that started fracturing, sent with the next o.new
 var fractureIds = {}  # authority: parents tombstoned by o.new (their exit counts as a fracture)
-var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta], ...]
+var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta, hops], ...]
 var streamAccum = 0.0
 var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
@@ -41,7 +41,19 @@ var lastAuth = -1     # member: the authority we last reported our rocks to (o.l
 var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
 var told = {}         # authority: members we've sent the ownership table to
 # gate evidence (5 s lines): beam damage forwarded / applied, bullet contacts applied / suppressed, per rock id
-var dmgStats = {}     # id -> {fwd_n, fwd_e, app_n, app_e, bul_app, bul_fx}
+var dmgStats = {}     # id -> {fwd_n, fwd_e, app_n, app_e, bul_app, bul_fx, relay_n, lost_n, lost_e, gone_n, gone_e, held_n, hops_max}
+const DMG_HOPS = 3    # a hit that reaches a peer who no longer owns its rock is relayed to the owner, at most this often
+# --coop-dev-dmg-delay=<s> (dev, gate 5 relay staging): forwarded hits wait this long before they are sent, addressed to
+# the owner at forward time, so a claim made meanwhile (DevBot laser,N,claim) puts them in flight across the ownership
+# change and the receiver must relay them. 0 = send on the next tick (normal).
+var dmgDelay = 0.0
+var dmgDelayed = []   # [[due (s), to, item], ...]
+# --coop-dev-rel-delay=<s> (dev, gate 5 held-hit staging): a member's o.rel waits this long before it is sent, standing in
+# for a slow link, so the authority's table still names us while we already pass hits on (the held path in _deliverHit).
+var relDelay = 0.0
+var relDelayed = []   # [[due (s), to, msg], ...]
+var dmgHeld = []      # [[give up at (s), from, item], ...]: hits relayed by the peer our table still names (_deliverHit)
+const DMG_HOLD_S = 10.0
 var dmgLogAccum = 0.0
 
 func stat(id, key, amount = 1.0):
@@ -55,6 +67,13 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
+	for arg in OS.get_cmdline_args():
+		if arg.begins_with("--coop-dev-dmg-delay="):
+			dmgDelay = max(float(arg.substr(21)), 0.0)
+			Debug.l("COOP: OWN dev: forwarded hits held %.1f s before sending (relay staging)" % dmgDelay)
+		elif arg.begins_with("--coop-dev-rel-delay="):
+			relDelay = max(float(arg.substr(21)), 0.0)
+			Debug.l("COOP: OWN dev: o.rel held %.1f s before sending (held-hit staging)" % relDelay)
 	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new", "b.new"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	connect("denied", self, "_onTimedDenied")
@@ -201,6 +220,7 @@ func untouch(node, why):
 func _release(id, node, why):
 	if node.get("fracturing") == true:
 		mine.erase(id)
+		owners.erase(id)
 		fractured[id] = true   # reported as a parent in the next o.new
 		Debug.l("COOP: OWN %s let go of %s while it fractures: reported as a fracture, not released" % [why, id])
 		return
@@ -208,11 +228,18 @@ func _release(id, node, why):
 		eat(node, "mpu")
 		return
 	mine.erase(id)
+	# back to the authority from this moment: hits relayed to us meanwhile go on to it (run 055415: with the table
+	# still naming us until the authority's o.chg, they had nowhere to go)
+	owners.erase(id)
 	var c = _cell()
 	var e = epochOf(id)
-	net.send(c.authority(), {"t": "o.rel", "id": id, "e": e, "why": why,
+	var rel = {"t": "o.rel", "id": id, "e": e, "why": why,
 		"p": node.global_position, "r": node.global_rotation, "v": node.linear_velocity, "w": node.angular_velocity,
-		"te": node.get("totalEnergy") if node.get("totalEnergy") != null else 0.0}, true)
+		"te": node.get("totalEnergy") if node.get("totalEnergy") != null else 0.0}
+	if relDelay > 0:
+		relDelayed.append([_now() + relDelay, c.authority(), rel])
+	else:
+		net.send(c.authority(), rel, true)
 	_rs().track(id, node, node.global_position, node.global_rotation, node.linear_velocity, node.angular_velocity)
 	Debug.l("COOP: OWN release %s (%s) e=%d" % [id, why, e])
 
@@ -271,6 +298,7 @@ func eat(node, why):
 		Debug.l("COOP: OWN eat %s (%s) but we don't own it" % [id, why])
 		return
 	mine.erase(id)
+	owners.erase(id)
 	net.send(_cell().authority(), {"t": "o.eat", "id": id, "e": epochOf(id), "c": comp, "why": why}, true)
 	Debug.l("COOP: OWN eat %s (%s) %s" % [id, why, comp])
 
@@ -341,6 +369,7 @@ func _sendBorn():
 		rs.handOver(rc[0])
 	for id in parents:
 		mine.erase(id)
+		owners.erase(id)   # the rock is gone; the authority's o.new handling clears its own entry
 		reasons.erase(id)
 	Debug.l("COOP: OWN o.new: %d shards, parents %s" % [l.size(), parents])
 	born.clear()
@@ -597,11 +626,24 @@ func forwardDamage(node, kind, amount, point, delta):
 	var local = node.global_transform.affine_inverse().xform(point) if point is Vector2 else Vector2()
 	stat(id, "fwd_n")
 	stat(id, "fwd_e", float(amount))
+	var item = [id, epochOf(id), kind, float(amount), local, float(delta) if delta != null else 0.0, 0]
+	if dmgDelay > 0:
+		dmgDelayed.append([_now() + dmgDelay, to, item])
+		return
 	if not dmgQueue.has(to):
 		dmgQueue[to] = []
-	dmgQueue[to].append([id, epochOf(id), kind, float(amount), local, float(delta) if delta != null else 0.0])
+	dmgQueue[to].append(item)
 
 func _flushDamage():
+	while not relDelayed.empty() and relDelayed[0][0] <= _now():
+		var r = relDelayed.pop_front()
+		net.send(r[1], r[2], true)
+	_retryHeld()
+	while not dmgDelayed.empty() and dmgDelayed[0][0] <= _now():
+		var d = dmgDelayed.pop_front()
+		if not dmgQueue.has(d[1]):
+			dmgQueue[d[1]] = []
+		dmgQueue[d[1]].append(d[2])
 	for to in dmgQueue:
 		if not dmgQueue[to].empty():
 			net.send(to, {"t": "d.ev", "l": dmgQueue[to]}, true)
@@ -611,18 +653,23 @@ func _on_d_ev(from, msg):
 	var l = msg.get("l")
 	if not (l is Array):
 		return
-	var rs = _rs()
 	for it in l:
-		if not (it is Array) or it.size() != 6:
-			continue
-		var id = str(it[0])
-		if not ownsHere(id):
-			continue   # it moved on; the sender learns the new owner from o.chg
-		var node = rs.nodeOf(id)
+		if (it is Array) and it.size() >= 6:
+			_deliverHit(from, it)
+
+# One forwarded hit [id, epoch, kind, amount, local point, delta, hops], from the peer that sent it here.
+func _deliverHit(from, it):
+	var id = str(it[0])
+	var hops = int(it[6]) if it.size() > 6 else 0
+	var rs = _rs()
+	var node = rs.nodeOf(id)
+	if ownsHere(id):
 		if node == null:
-			continue
-		stat(id, "app_n")
-		stat(id, "app_e", float(it[3]))
+			# the rock broke or was eaten on its owner before the hit arrived (run 054548: the shooter fractured it while
+			# it held it); the hit has nothing left to land on, as in stock. Counted so the books still balance
+			_hitDone(id, "gone", it, hops)
+			return
+		_hitDone(id, "app", it, hops)
 		var point = node.global_transform.xform(it[4])
 		var d = it[5] if it[5] > 0 else null
 		match str(it[2]):
@@ -632,6 +679,58 @@ func _on_d_ev(from, msg):
 				node.applyKineticDamage(it[3], point, d)
 			"m":
 				node.applyEmpDamage(it[3], point, d if d != null else 1.0 / 60.0)
+		return
+	# it moved on while the hit was in flight (run 045053: the shooter forwarded a hit to the authority just after the
+	# authority granted the rock to the shooter)
+	var to = ownerOf(id)
+	if to == from and hops > 0 and _isAuthority():
+		# our table still names the peer that relayed it here: that peer has let go (its o.rel / o.new / o.eat is on the
+		# way to us). Only the authority holds: it is the one those messages go to (run 061759: a member whose table
+		# named the authority held hits the authority had relayed to it, and nothing ever moved its table on). Bouncing it back would ping-pong for as long as that message takes (any latency), so keep it here
+		# until our table moves on, then deliver it from here (_retryHeld). A first-hand hit (hops 0) from the peer we
+		# just granted the rock goes back to it: our o.ok went out before the relay on the same reliable channel, so
+		# it owns the rock when the hit arrives (the 045053 case).
+		dmgHeld.append([_now() + DMG_HOLD_S, from, it])
+		stat(id, "held_n")
+		return
+	if _inCell() and hops < DMG_HOPS and to != net.myId:
+		var fw = it.duplicate()
+		fw.resize(7)
+		fw[6] = hops + 1
+		if not dmgQueue.has(to):
+			dmgQueue[to] = []
+		dmgQueue[to].append(fw)
+		stat(id, "relay_n")
+	elif node == null:
+		# nobody else to pass it to and the rock is gone here: nothing left to land on
+		_hitDone(id, "gone", it, hops)
+	else:
+		_hitDone(id, "lost", it, hops)
+
+# A hit's end: app(lied), gone (its rock broke first) or lost. hops_max: the most relays any hit of this rock took.
+func _hitDone(id, how, it, hops):
+	stat(id, how + "_n")
+	stat(id, how + "_e", float(it[3]))
+	if not dmgStats[id].has("hops_max") or dmgStats[id]["hops_max"] < hops:
+		dmgStats[id]["hops_max"] = hops
+
+# Held hits whose sender our table still names: deliver each once the table moves on (or its rock is gone here);
+# after DMG_HOLD_S s with neither, it is lost.
+func _retryHeld():
+	if dmgHeld.empty():
+		return
+	var keep = []
+	for h in dmgHeld:
+		var id = str(h[2][0])
+		if _rs().nodeOf(id) == null:
+			_hitDone(id, "gone", h[2], int(h[2][6]) if h[2].size() > 6 else 0)
+		elif not _inCell() or ownerOf(id) != h[1]:
+			_deliverHit(-1, h[2])
+		elif _now() >= h[0]:
+			_hitDone(id, "lost", h[2], int(h[2][6]) if h[2].size() > 6 else 0)
+		else:
+			keep.append(h)
+	dmgHeld = keep
 
 func _logDamage():
 	var rs = _rs()
@@ -639,9 +738,13 @@ func _logDamage():
 		var st = dmgStats[id]
 		var n = rs.nodeOf(id)
 		var te = n.get("totalEnergy") if n != null and n.get("totalEnergy") != null else -1.0
-		Debug.l("COOP: OWN dmg %s owner=%s here=%s fwd=%d/%.0f applied=%d/%.0f bullet applied=%d fx=%d totalEnergy=%.1f" % [
-			id, ownerOf(id), "owned" if ownsHere(id) else "copy", st.get("fwd_n", 0), st.get("fwd_e", 0), st.get("app_n", 0),
-			st.get("app_e", 0), st.get("bul_app", 0), st.get("bul_fx", 0), te])
+		# here: owned if this peer owns the rock now or owned it when it applied a hit in these 5 s (hits and bullet
+		# contacts are applied only where ownsHere / not _fxOnly); a short hold can end before the line is written
+		var owned = ownsHere(id) or st.get("app_n", 0) > 0 or st.get("bul_app", 0) > 0
+		Debug.l("COOP: OWN dmg %s owner=%s here=%s fwd=%d/%.0f applied=%d/%.0f bullet applied=%d fx=%d totalEnergy=%.1f relayed=%d lost=%d/%.0f gone=%d/%.0f held=%d hops<=%d" % [
+			id, ownerOf(id), "owned" if owned else "copy", st.get("fwd_n", 0), st.get("fwd_e", 0), st.get("app_n", 0),
+			st.get("app_e", 0), st.get("bul_app", 0), st.get("bul_fx", 0), te, st.get("relay_n", 0), st.get("lost_n", 0),
+			st.get("lost_e", 0), st.get("gone_n", 0), st.get("gone_e", 0), st.get("held_n", 0), st.get("hops_max", 0)])
 	dmgStats.clear()
 
 # ---------------------------------------------------------------- tick
@@ -848,6 +951,7 @@ func _onRockGone(id, node):
 		# a rock we own is leaving our field
 		if node.get("fracturing") == true:
 			mine.erase(id)
+			owners.erase(id)
 			fractured[id] = true
 		elif node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true:
 			eat(node, "mpu")
