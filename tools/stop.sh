@@ -15,6 +15,8 @@ if [ "$DV_OS" = windows ]; then
 else
   pkill -f "$DV_EXE" 2>/dev/null || true
 fi
+# taskkill returns before the processes are gone; the next dev run's dv_lock refuses while any is still open
+for _ in $(seq 1 40); do [ "$(dv_running)" -eq 0 ] && break; sleep 0.5; done
 # keep the run's logs: the next dev2/dev3 clears them, so a gate read after the lock is released would find nothing
 holder="$(cut -d' ' -f1 "$DV_LOCK/owner" 2>/dev/null)"
 RUN="$DV_INST/dvcoop-runs/${holder:-unknown}-$(date +%Y%m%d-%H%M%S)"
