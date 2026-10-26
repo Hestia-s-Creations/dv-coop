@@ -44,7 +44,17 @@ PHASES = {
               {"DIVE_X": "150000", "OFF_B": "1500", "WARP_C": "90", "WARP_C_DIST": "3000"},
               {"A": "", "B": "", "C": "--coop-dev-poi=Addlet --coop-dev-return=20"},
               ("C", r"COOP: NPC dev: returned to"), 6 * 60, 30),
-    # Own track (tim-58): gates 1, 5, 6 go here
+    # Own track (tim-58), from m4-race1 / m4-gate5 / m4-gate6; the mass driver moved to C on savegame-b.dv (EMD-14)
+    # since bots no longer fit anything
+    "race": ("1",
+             {"OFF_B": "1200", "WARP_C_DIST": "900"},
+             {"A": "--coop-bot=race,100", "B": "--coop-bot=race,100", "C": "--coop-bot=race,100"},
+             ("AB", r"COOP: BOT race done, \d+ trials sent"), 9 * 60),
+    "shoot": ("5,6",
+              {"OFF_B": "1200", "WARP_C_DIST": "900"},
+              {"A": "--coop-bot=laser,4", "B": "--coop-bot=laser,4",
+               "C": "--coop-slot=savegame-b.dv --coop-bot=massdriver,4"},
+              ("C", r"COOP: BOT massdriver done, \d+ trials"), 7 * 60),
 }
 
 
