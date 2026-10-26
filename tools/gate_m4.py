@@ -361,6 +361,75 @@ def gate10(insts):
     return not bad and not twice, ev
 
 
+def _secs(line):
+    m = re.search(r"\[\d+/\d+/\d+ (\d+):(\d+):(\d+)\]", line)
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
+
+
+def gate11(insts):
+    """Pause in a cell: focus loss, the Steam overlay and the pause key open the menu on one member without pausing
+    its game; the cell keeps that player (no silence, handoff or leave) and its ship keeps moving."""
+    ev = []
+    ok = True
+    staged = [i for i in insts if i.count(r"COOP: NPC dev pause step")]
+    if not staged:
+        return False, ["FAIL: not staged (use --coop-dev-pause=<s> on a member)"]
+    for i in staged:
+        steps = [l for l in i.lines if "COOP: NPC dev pause step" in l]
+        t0, t1 = _secs(steps[0]), _secs(steps[-1]) + 4
+        paused = [l for l in steps if "tree paused=True" in l]
+        opened = i.count(r"COOP: SHIPS pause menu open in a cell")
+        closed = i.count(r"COOP: SHIPS pause menu closed in a cell")
+        where = [re.search(r"ship at \((-?[\d.]+), (-?[\d.]+)\)", l) for l in steps]
+        moved = len({(round(float(m.group(1))), round(float(m.group(2)))) for m in where if m}) > 1
+        ev.append("%s: %d steps, menu opened %d / closed %d in a cell, tree paused at a step: %d, ship moving: %s" % (
+            i.name(), len(steps), opened, closed, len(paused), moved))
+        if len(steps) < 6 or opened < 3 or closed < 2 or paused or not moved:
+            ok = False
+            ev.append("FAIL: the menu must open and close without pausing, and the ship must keep moving")
+        for o in insts:
+            bad = [l for l in o.lines if (t0 or 0) <= (_secs(l) or -1) <= (t1 or 0)
+                   and re.search(r"COOP: CELL (authority \d+ silent|PROMOTED|LEFT cell|authority \d+ resigned)", l)]
+            if bad:
+                ok = False
+                ev.append("FAIL %s during the pause steps: %s" % (o.name(), bad[0][-120:]))
+    return ok, ev
+
+
+def gate11b(insts):
+    """Menu to title in a cell: a member and the authority leave through the pause menu; the others drop the member,
+    or hand authority off, within 1 s, without waiting for the silence timeout."""
+    ev = []
+    ok = True
+    quits = [(i, l) for i in insts for l in i.lines if "COOP: NPC dev: menu quit to title as" in l]
+    if not quits:
+        return False, ["FAIL: not staged (use --coop-dev-menu-quit=<s>,member and <s>,auth)"]
+    roles = set()
+    for i, l in quits:
+        role = re.search(r"as (\w+)", l).group(1)
+        roles.add(role)
+        t = _secs(l)
+        pat = r"COOP: CELL (member %s left|authority %s resigned|authority %s -> )" % (i.peer, i.peer, i.peer)
+        seen = []
+        for o in insts:
+            if o is i:
+                continue
+            hits = [_secs(x) for x in o.lines if re.search(pat, x) and _secs(x) is not None and 0 <= _secs(x) - t <= 1]
+            silent = [x for x in o.lines if re.search(r"COOP: CELL authority %s silent" % i.peer, x) and 0 <= (_secs(x) or -9) - t <= 10]
+            if hits:
+                seen.append("%s +%ds" % (o.name(), hits[0] - t))
+            if silent:
+                ok = False
+                ev.append("FAIL %s: waited for the silence timeout on %s" % (o.name(), i.name()))
+        ev.append("%s left as %s; noticed by %s" % (i.name(), role, seen))
+        if not seen:
+            ok = False
+            ev.append("FAIL: nobody saw %s leave within 1 s" % i.name())
+    if roles != {"member", "auth"}:
+        ev.append("note: only %s staged" % sorted(roles))
+    return ok, ev
+
+
 GATES = {
     1: gate1,
     2: gate2,
@@ -374,6 +443,8 @@ GATES = {
     9: gate9,
     "9b": gate9b,
     "9c": gate9c,
+    11: gate11,
+    "11b": gate11b,
 }
 
 
