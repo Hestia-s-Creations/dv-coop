@@ -227,11 +227,12 @@ def gate1(insts):
     return not bad, ev
 
 
-def gate2(insts):
+def gate2(insts, arm=False):
     """Mid-fracture grab: the claw ends with the rock or with shards, never both, never neither."""
-    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)")]
+    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)(.*)")
+           if not arm or not re.search(r"\((jitter|no )", m.group(3))]   # noarm lines end "(jitter ..)" / "(no ..)"
     if not res:
-        return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N)"]
+        return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N%s)" % ("" if arm else "[,noarm]")]
     # shards the authority's fracture actually spawned (the stock fracture can spawn none: each shard gets one
     # placement try); "neither" is only a failure when shards existed
     spawned = {}
@@ -376,6 +377,29 @@ def gate10(insts):
     return bool(sent) and stripped > 0 and not bad and not twice and not lost and not badaudit and not noaudit, ev
 
 
+def gate2r(insts):
+    """Mid-fracture grab with a real salvage arm (dev slot savegame-arm.dv): gate 2 counting arm trials only."""
+    return gate2(insts, arm=True)
+
+
+def gate10r(insts):
+    """Ore audit with a real MPU: gate 10, fed only by the stock MPU (--coop-bot=mpu,N), with at least one rock eaten."""
+    ok, ev = gate10(insts)
+    eaten = sum(i.count(r"COOP: BOT mpu trial=\d+ id=\S+ result=eaten") for i in insts)
+    other = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT mpu trial=\d+ id=\S+ result=(\S+)"):
+            other[m.group(1)] = other.get(m.group(1), 0) + 1
+    simulated = sum(i.count(r"COOP: BOT eat trial=") for i in insts)
+    nompu = sum(i.count(r"COOP: BOT mpu: no MPU") for i in insts)
+    ev.append("MPU trials: %s" % (other or "none"))
+    if not eaten:
+        ev.append("FAIL: the stock MPU ate no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
+    if simulated:
+        ev.append("FAIL: %d simulated eat-bot lines; gate 10r is the real MPU only" % simulated)
+    return ok and eaten > 0 and not simulated, ev
+
+
 def _secs(line):
     m = re.search(r"\[\d+/\d+/\d+ (\d+):(\d+):(\d+)\]", line)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
@@ -448,11 +472,13 @@ def gate11b(insts):
 GATES = {
     1: gate1,
     2: gate2,
+    "2r": gate2r,
     3: gate3,
     4: gate4,
     5: gate5,
     6: gate6,
     10: gate10,
+    "10r": gate10r,
     7: gate7,
     8: gate8,
     9: gate9,
