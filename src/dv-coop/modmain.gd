@@ -27,6 +27,10 @@ const EXTENSIONS = [
 	"res://dv-coop/ext/CurrentGame.gd",
 	"res://dv-coop/ext/BulletTimer.gd",
 	"res://dv-coop/ext/PauseLayer.gd",
+	"res://dv-coop/ext/TitleMenu.gd",
+	"res://dv-coop/ext/AstrogatorPanel.gd",
+	"res://dv-coop/ext/AstrogationDestinations.gd",
+	"res://dv-coop/ext/DiveTarget.gd",
 ]
 
 var modLoader = null

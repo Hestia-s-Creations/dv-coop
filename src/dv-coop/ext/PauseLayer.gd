@@ -8,6 +8,31 @@ extends "res://PauseLayer.gd"
 # goes through pauseGame, so this one override covers them. The stock pause key toggles with `not tree.paused`, which
 # stays false in a cell, so a pause-key press while the menu is open is read here as "close". While the menu is open
 # the local ship takes no manual input (ship-ctrl ext), so clicking the menu doesn't fly the ship.
+#
+# M5: a "Co-op" button after Resume opens the co-op panel (ui/CoopPanel.gd) in the menu's own CenterContainer, in
+# flight and at Enceladus. A join request (a Steam invite while playing) opens the menu with the question on it.
+
+var coopPanel = null
+
+func _ready():
+	add_to_group("dvcoop_pause")
+	var box = $PauseContainer/MarginContainer/VBoxContainer
+	var b = Button.new()
+	b.name = "Coop"
+	b.text = "Co-op"
+	box.add_child(b)
+	box.move_child(b, box.get_node("Resume").get_index() + 1)
+	b.connect("pressed", self, "coopOpen")
+	coopPanel = load("res://dv-coop/ui/CoopPanel.gd").new()
+	$PauseContainer/NoMargins/CenterContainer.add_child(coopPanel)
+
+func coopOpen():
+	if not $PauseContainer.visible:
+		pauseGame(true)
+	coopPanel.open()
+
+func coopAsk():
+	coopOpen()
 
 func _coopInCell() -> bool:
 	if not ModLoader.has_meta("dvcoop"):
@@ -16,6 +41,8 @@ func _coopInCell() -> bool:
 	return cell != null and cell.inCell()
 
 func pauseGame(pause):
+	if not pause and coopPanel != null:
+		coopPanel.close()
 	if not _coopInCell():
 		if Engine.has_meta("dvcoop_menu"):
 			Engine.remove_meta("dvcoop_menu")

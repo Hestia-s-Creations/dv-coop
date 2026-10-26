@@ -302,8 +302,10 @@ func _becomeAuthority(comp):
 	role = Role.AUTHORITY
 	auth = net.myId
 	cellSeq += 1
-	cid = "%s:%d" % [net.myId, cellSeq]
 	born = OS.get_system_time_msecs()
+	# born makes the id unique across restarts: Steam ids are stable and cellSeq restarts at 1, so a restarted
+	# player's new cell would otherwise reuse a cid that peers still hold in `resigned` and ignore it
+	cid = "%s:%d:%d" % [net.myId, born, cellSeq]
 	off = CurrentGame.globalOffset
 	originGen = 0
 	cellMembers = comp
