@@ -55,10 +55,14 @@ PHASES = {
               {"A": "--coop-bot=laser,4", "B": "--coop-bot=laser,4",
                "C": "--coop-slot=savegame-b.dv --coop-bot=massdriver,4"},
               ("C", r"COOP: BOT massdriver done, \d+ trials"), 7 * 60),
-    "haul": ("haul,memberfrac",          # C is always a member; haul drones push toward the excavator (the salvage arm): slot d TRTL
+    # B and C both load the arm save (slot d TRTL: haul drones, salvage arm as the excavator) and run the haul bot:
+    # only one of A, B, C is the cell authority (lowest peer id), so at least one of B and C is a member and runs it
+    # (the authority's bot logs "haul idle"). The phase ends when one of them is done.
+    "haul": ("haul,memberfrac",
              {"OFF_B": "1200", "WARP_C_DIST": "900"},
-             {"C": "--coop-slot=savegame-arm.dv --coop-bot=haul,3"},
-             ("C", r"COOP: BOT haul done, \d+ trials"), 6 * 60),
+             {"B": "--coop-slot=savegame-arm.dv --coop-bot=haul,3",
+              "C": "--coop-slot=savegame-arm.dv --coop-bot=haul,3"},
+             ("BC", r"COOP: BOT haul done, \d+ trials"), 7 * 60),
 }
 
 

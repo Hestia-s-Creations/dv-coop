@@ -530,30 +530,53 @@ def _mpuDuplicates(insts):
     return out
 
 
+HAUL_MIN_TRIALS = 3
+
+
 def gatehaul(insts):
-    """Haul drones: a member's haul drones claim the rock they push (touch-to-own) and move it to their excavator (or
-    the MPU eats it); no trial hauls a rock it never owned; conservation and the ore audit hold (gate 10)."""
+    """Haul drones: every valid haul trial ends with the rock flown in (or eaten) while the member owned it (touch-to-
+    own); at least HAUL_MIN_TRIALS valid trials ran; no rock moved without being owned; conservation and the ore audit
+    hold (gate 10). A trial is valid when its placed line shows a target the stock plant takes: past the drones'
+    fly-in zone, through the plant's mineral filter, and the stock scanForTarget check at placement >= 3x the plant's
+    cut ("placed (offset .. px, stock check c vs cut k, valid=True"). Any other trial is a setup miss: reported, never
+    counted toward a pass."""
+    placed = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT haul trial=(\d+) id=(\S+) d0=(-?\d+) placed(?: \(offset \d+ px, stock check (\d+) vs cut (\d+), valid=(\w+))?"):
+            # valid: the stock scanForTarget check at placement clears 3x the plant's cut (DevBot HAUL_MIN_CHECK)
+            placed[(i.name(), m.group(1))] = m.group(6) == "True" and float(m.group(4)) >= 3 * float(m.group(5))
     rows = [(i.name(),) + m.groups() for i in insts
             for m in i.grep(r"COOP: BOT haul trial=(\d+) id=(\S+) result=(\S+) owned=(\w+) d0=(-?\d+) d1=(-?\d+)")]
     if not rows:
         none = sum(i.count(r"COOP: BOT haul: no haul drones") for i in insts)
+        idle = [i.name() for i in insts if i.count(r"COOP: BOT haul idle: this instance is the cell authority")]
+        if idle and not none:
+            return False, ["FAIL: no member ran the bot (cell authority idle: %s); stage the haul bot on two instances" % idle]
         return False, ["FAIL: no haul trials%s (run --coop-bot=haul,N on a member with SYSTEM_DND_HAUL)" % (
             " (no haul drones on the bot's ship)" if none else "")]
-    good = [r for r in rows if r[3] in ("eaten", "closer") and r[4] == "True"]
+    valid = [r for r in rows if placed.get((r[0], r[1]))]
+    misses = [r for r in rows if not placed.get((r[0], r[1]))]
+    good = [r for r in valid if r[3] in ("eaten", "closer") and r[4] == "True"]
+    failed = [r for r in valid if r not in good]
     unowned = [r for r in rows if r[3] in ("eaten", "closer") and r[4] != "True"]
     ok10, ev10 = gate10(insts) if any(i.grep(r"COOP: OWN eat ") for i in insts) else (True, ["no eats (ore audit not needed)"])
-    counts = {}
-    for r in rows:
-        counts[r[3]] = counts.get(r[3], 0) + 1
-    ev = ["%d haul trials: %s; moved or eaten while owned: %d" % (len(rows), counts, len(good))]
-    ev += ["%s trial %s %s: %s owned=%s %s -> %s px" % r for r in rows[:10]]
+    ev = ["%d haul trials: %d valid, %d hauled while owned; %d setup misses (no valid target: not counted)" % (
+        len(rows), len(valid), len(good), len(misses))]
+    ev += ["%s trial %s %s: %s owned=%s %s -> %s px%s" % (r + ("" if r in valid else "  (setup miss)",)) for r in rows[:10]]
+    ev += ["FAIL valid trial not hauled while owned: %s trial %s %s (%s owned=%s)" % (r[0], r[1], r[2], r[3], r[4])
+           for r in failed[:5]]
     ev += ["FAIL moved a rock it never owned: %s trial %s" % (r[0], r[1]) for r in unowned[:5]]
     ev += ["gate 10: " + e for e in ev10]
-    if not good:
-        ev.append("FAIL: no rock was hauled while owned")
+    solo = [(i.name(),) + m.groups() for i in insts
+            for m in i.grep(r"COOP: BOT haul-solo trial=(\d+) id=(\S+) result=(\S+) owned=\w+ d0=(-?\d+) d1=(-?\d+)")]
+    if solo:
+        ev.append("stock baseline (not scored): %d solo trials, closer %d: %s" % (
+            len(solo), sum(1 for r in solo if r[3] == "closer"), ", ".join("%s %s->%s" % (r[3], r[4], r[5]) for r in solo[:5])))
+    if len(valid) < HAUL_MIN_TRIALS:
+        ev.append("FAIL: %d valid trials, need %d" % (len(valid), HAUL_MIN_TRIALS))
     dup = _mpuDuplicates(insts)
     ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
-    return bool(good) and not unowned and ok10 and not dup, ev
+    return len(valid) >= HAUL_MIN_TRIALS and not failed and not unowned and ok10 and not dup, ev
 
 
 SHARD_WINDOW = 3.0   # s after a member reports a fracture parent in which its shards follow (stock: one per frame, <= 2 s)
