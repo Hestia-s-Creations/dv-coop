@@ -52,6 +52,16 @@ def gate1(logs):
         for l in i.lines:
             if re.search(r"COOP: TRAVEL dev: press (yes|join0) \(disabled\)", l):
                 ev.append("%s: Join was disabled when pressed (no save picked): %s" % (i.name(), l[-50:]))
+    # Host and Leave from the panel (any instance, any scene)
+    for i in logs:
+        for l in i.lines:
+            if re.search(r"COOP: UI (host|leave) pressed", l):
+                what = re.search(r"UI (host|leave) pressed", l).group(1)
+                want = r"COOP: SESSION in lobby" if what == "host" else r"COOP: SESSION idle"
+                done = i.after(want, _secs(l), 15)
+                staged = True
+                ok = ok and bool(done)
+                ev.append("%s: %s pressed -> %s" % (i.name(), what, "ok" if done else "FAIL (no '%s')" % want))
     if not staged:
         return False, ["FAIL: not staged (use --coop-dev-ui=...:coop,...:slot=<file>,...:join on B)"]
     return ok, ev
