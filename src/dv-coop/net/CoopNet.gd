@@ -101,6 +101,7 @@ var handlers = {}
 
 # peers turned away by the hello check: id -> "name: why", for the friend list (review R10)
 var incompatible = {}
+var heardFrom = {}         # id -> s (ticks) of its last packet of any kind: Cell's authority-silence check (K1)
 
 func _ready():
 	for path in MODULES:
@@ -646,6 +647,7 @@ func _recv(from, msg: Dictionary):
 		return
 	if incompatible.has(from) and msg.t != "hello":
 		return
+	heardFrom[from] = OS.get_ticks_msec() / 1000.0
 	match msg.t:
 		"peerlist":
 			for id in msg.ids:

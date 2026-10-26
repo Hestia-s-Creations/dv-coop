@@ -21,6 +21,8 @@ extends Node
 # Dev: --coop-warp-to-peer=<s>[,<px>]  s seconds after the dive cutscene ends, jump to <px> (default 20,000) beside a
 #      cell authority (else the lowest-id peer), off to the side of its course, matching its velocity.
 #      --coop-dev-slipstream=<s> as authority with confirmed members, force the stock slipstream every s seconds.
+#      --coop-dev-auth-flip=<s>  s seconds after first joining a cell as a member, treat the live authority as gone
+#                                once: I promote and resign back to it in the same tick (the warp-in flip of gate flip).
 
 signal cell_joined(authority_id)
 signal cell_left()
@@ -60,7 +62,7 @@ var born = 0                   # formation time of the cell (system ms), carried
 var mergeTo = 0                # member: our authority resigned in favour of this authority's cell
 var mergeSince = 0.0
 var adverts = {}               # authority id -> {cid, n, born, at}: cells other machines run
-var resigned = {}              # id -> cid it resigned; its late packets for that cid are ignored
+var resigned = {}              # id -> {cid, until}: its late packets for that cid are ignored for RESIGN_GRACE s
 var lastWinner = 0
 var ghost = null               # member: {n, born, until} of our cell after its authority died, held by the heir
 var adAccum = 0.0
@@ -85,6 +87,8 @@ var warpDone = false
 var warpDist = WARP_DISTANCE
 
 var devSlipEvery = -1.0
+var devFlipAfter = -1.0        # --coop-dev-auth-flip
+var devFlipAt = -1.0
 var devSlipClock = 0.0
 
 func _ready():
@@ -105,6 +109,8 @@ func _ready():
 				warpDist = float(parts[1])
 		elif arg.begins_with("--coop-dev-slipstream="):
 			devSlipEvery = float(arg.substr(22))
+		elif arg.begins_with("--coop-dev-auth-flip="):
+			devFlipAfter = float(arg.substr(21))
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 
@@ -162,10 +168,28 @@ func _physics_process(delta):
 		heardAt[auth] = max(heardAt.get(auth, now), now)
 	lastTickAt = now
 
-	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
+	if devFlipAt >= 0 and now >= devFlipAt and role == Role.MEMBER and mergeTo == 0 and not lost.has(auth):
+		devFlipAt = -1.0
+		# promote and resign back in the same tick: my c.state and c.leave go out back to back (both reliable, same
+		# link), so a member takes both before the old authority's next c.state, as on the warp-in of
+		# tim-58-20261026-091313 (a tick apart, the old authority's state slipped in between twice)
+		var old = auth
+		lost[old] = now
+		_setGhost(now)
+		_log("dev: authority flip: treating live authority %s as gone" % old)
+		var comp = []
+		for id in lastComp:
+			if id != old:
+				comp.append(id)
+		_promote(comp)
+		_leave("dev: authority flip back to %s" % old, old)
+	# any packet from the authority counts (rock updates, beacons, o.*): during a join burst its unreliable c.hb can
+	# sit behind the snapshot for over AUTH_SILENT while everything else still arrives (docs/M5.md, K1)
+	var lastAuth = max(heardAt.get(auth, now), net.heardFrom.get(auth, 0.0))
+	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - lastAuth > AUTH_SILENT:
 		lost[auth] = now
 		_setGhost(now)
-		_log("authority %s silent %.1f s, treating as gone" % [auth, now - heardAt.get(auth, now)])
+		_log("authority %s silent %.1f s, treating as gone" % [auth, now - lastAuth])
 		viewAccum = 1.0
 
 	viewAccum += delta
@@ -264,6 +288,9 @@ func _decide(comp, now):
 	if win != lastWinner:
 		_log("winner of %s is %s" % [comp, win])
 		lastWinner = win
+		if resigned.has(win):
+			resigned.erase(win)
+			_log("%s elected: its earlier resignation no longer applies" % win)
 
 	if win == net.myId:
 		match role:
@@ -365,6 +392,9 @@ func _leave(why, to = 0):
 	emit_signal("cell_left")
 
 func _join(from, msg):
+	if devFlipAfter >= 0:
+		devFlipAt = _now() + devFlipAfter
+		devFlipAfter = -1.0
 	role = Role.MEMBER
 	auth = from
 	cid = msg.cid
@@ -514,8 +544,15 @@ func _noteAd(from, msg):
 	else:
 		adverts[from] = {"cid": msg.get("cid"), "n": msg.get("n"), "born": msg.get("born", 0), "at": _now()}
 
+# Only in-flight packets are late: a peer that resigned a cid and later takes it over again (a member that briefly
+# promoted on a warp-in hitch, then the authority dies) must be heard, or the cell splits on the handoff.
 func _isResigned(from, msg):
-	return resigned.has(from) and resigned[from] == msg.get("cid")
+	if not resigned.has(from):
+		return false
+	if _now() > resigned[from].until:
+		resigned.erase(from)
+		return false
+	return resigned[from].cid == msg.get("cid")
 
 func _onJoin(from, msg):
 	_heard(from)
@@ -534,7 +571,7 @@ func _onJoin(from, msg):
 
 func _onLeave(from, msg):
 	if role == Role.MEMBER and from == auth and msg.get("cid") == cid:
-		resigned[from] = cid
+		resigned[from] = {"cid": cid, "until": _now() + RESIGN_GRACE}
 		var to = msg.get("to", 0)
 		if to != 0:
 			mergeTo = to

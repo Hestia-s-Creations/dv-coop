@@ -34,6 +34,12 @@ PHASES = {
                "B": "--coop-dev-fireall=15,270 --coop-dev-explode-member=290",
                "C": ""},
               ("AB", r"COOP: NPC s\.die sent"), 8 * 60),
+    # C warps in, briefly takes the cell over and resigns back (--coop-dev-auth-flip, the warp-in hitch of
+    # tim-58-20261026-091313); once all three sit in one cell again the authority is hard-killed
+    "flip": ("flip",
+             {"OFF_B": "1200", "WARP_C_DIST": "900"},
+             {"C": "--coop-dev-auth-flip=6"},
+             ("C", r"COOP: CELL dev: authority flip"), 5 * 60, 30),
     "npc-pod": ("9b",
               {"DIVE_X": "0", "OFF_B": "1500"},
               {"A": "--coop-dev-pirate=15 --coop-dev-kill-npc=20",
@@ -89,11 +95,27 @@ def run_phase(name):
         ga.launch(name, extra)
         hit = ga.wait_for(lambda: any(ga.grep(i, until) for i in insts), limit, 5)
         ga.log("phase %s %s" % (name, "reached its end marker" if hit else "cut at the time limit"))
+        if hit and name == "flip":
+            _kill_authority()
         time.sleep(after)
         return ga.stop(name, gates)
     finally:
         ga.BASE.clear()
         ga.BASE.update(saved)
+
+
+def _kill_authority():
+    """flip: once A, B and C report one cell again (C back as a member after its flip), hard-kill its authority."""
+    if not ga.wait_for(lambda: ga.one_cell() and ga.status("C")[0] == "MEMBER", 60, 2):
+        ga.log("flip: the three never reported one cell again after the flip; no kill")
+        return
+    time.sleep(8)   # past RESIGN_GRACE, so only a lasting resignation could still drop the new authority's c.state
+    auth = ga.authority()
+    who = [i for i in "AB" if ga.peer(i) == auth]
+    if not who:
+        ga.log("flip: authority %s is not A or B; no kill" % auth)
+        return
+    ga.kill(who[0])
 
 
 def main(argv):
