@@ -26,6 +26,12 @@ extends Node
 #                         nearest tracked rock nobody owns, keeps the ship placed so the MPU intake covers it at matched
 #                         velocity, and lets the stock MPU claim (Own.touch "mpu"), process and free it (o.eat). Lines:
 #                         COOP: BOT mpu trial=i id=... result=eaten|denied:<why>|nograb|timeout, and "no MPU" if none.
+#   --coop-bot=haul[,N]   on a member whose ship has haul drones (SYSTEM_DND_HAUL; Cothon-V in savegame.dv). Each
+#                         trial places the ship HAUL_OFFSET px from the nearest tracked mineral rock nobody owns (haul
+#                         drones only take "pickable" rocks), switches the haul plants on and watches HAUL_TIME s while
+#                         the drones claim it (Own.touchFor "haul") and push it to the excavator (the MPU intake).
+#                         Lines: COOP: BOT haul trial=i id=... d0=<px to excavator> ... result=eaten|closer|nograb
+#                         owned=<did we own it while hauling> d1=<px at the end>.
 #   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
@@ -51,6 +57,8 @@ const FRAC_SHARD_WAIT = 4.0  # s a denied member waits for its arm to take a sha
 const EAT_EVERY = 4.0        # s between eat trials
 const MPU_WAIT = 6.0         # s for the intake to take a rock and the claim to resolve
 const MPU_EAT = 90.0         # s for the MPU to finish processing it
+const HAUL_OFFSET = 700.0   # px from the rock to the ship when a haul trial starts
+const HAUL_TIME = 40.0      # s a haul trial watches the drones
 const SHOOT_TIME = 3.0
 const SHOOT_GAP = 3.0
 const SHOOT_DIST = {"laser": 600.0, "massdriver": 900.0}
@@ -83,6 +91,7 @@ var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 var eatJob = {"id": "", "until": 0.0, "result": ""}
 var mpuJob = {"state": "idle", "id": "", "until": 0.0}   # mpu: feed (intake on the rock, claim pending) -> eat
 var mpuChecked = false
+var haulJob = {"state": "idle", "id": "", "until": 0.0}   # haul: watch -> result
 
 func _ready():
 	name = "DevBot"
@@ -140,6 +149,9 @@ func _physics_process(delta):
 		return
 	if mode == "mpu":
 		_mpuTick()
+		return
+	if mode == "haul":
+		_haulTick()
 		return
 	if mode != "race":
 		return
@@ -369,6 +381,96 @@ func _mpuEnd(result, now):
 	mpuJob = {"state": "idle", "id": "", "until": now + CLAW_GAP}
 	if trial >= trials:
 		Debug.l("COOP: BOT mpu done, %d trials" % trials)
+
+# ---------------------------------------------------------------- haul drones
+
+func _haulPlants(n, out):
+	for c in n.get_children():
+		if c.get("droneFunction") == "haul" and c.has_method("scanForTarget"):
+			out.append(c)
+		else:
+			_haulPlants(c, out)
+	return out
+
+func _haulTick():
+	var ship = net.localShip
+	var c = _cell()
+	if ship == null or not is_instance_valid(ship) or c == null or not c.inCell() or c.isAuthority() or not armFitted:
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	if ship.get("cutscene") == true or now - inCellSince < SETTLE:
+		return
+	var plants = _haulPlants(ship, [])
+	if plants.empty():
+		if not noWeaponLogged:
+			noWeaponLogged = true
+			Debug.l("COOP: BOT haul: no haul drones on this ship (the bot never changes a loadout)")
+		return
+	var rs = _rs()
+	var own = _own()
+	match haulJob.state:
+		"idle":
+			if trial >= trials or now < haulJob.until:
+				return
+			var best = ""
+			var bestD = 0.0
+			for id in rs.tracked:
+				var n = rs.tracked[id].n
+				if not is_instance_valid(n) or not n.is_in_group("pickable") or n.get("fracturing") == true \
+						or own.owners.has(id) or skipIds.has(id):
+					continue
+				var d = n.global_position.distance_to(ship.global_position)
+				if best == "" or d < bestD:
+					best = id
+					bestD = d
+			if best == "":
+				return
+			trial += 1
+			skipIds[best] = true
+			var rock = rs.nodeOf(best)
+			var away = (ship.global_position - rock.global_position).normalized()
+			if away == Vector2.ZERO:
+				away = Vector2(0, 1)
+			ship.global_position = rock.global_position + away * HAUL_OFFSET
+			ship.linear_velocity = rock.linear_velocity
+			ship.reset_physics_interpolation()
+			for p in plants:
+				p.enabled = true
+			haulJob = {"state": "watch", "id": best, "until": now + HAUL_TIME, "d0": _toExcavator(plants, rock),
+				"owned": false, "logAt": now + 2.0}
+			Debug.l("COOP: BOT haul trial=%d id=%s d0=%.0f placed" % [trial, best, haulJob.d0])
+		"watch":
+			var rock = rs.nodeOf(haulJob.id)
+			if rock == null or not is_instance_valid(rock):
+				_haulEnd(plants, "eaten", -1.0, now)
+				return
+			if own.mine.has(haulJob.id):
+				haulJob.owned = true
+			var d = _toExcavator(plants, rock)
+			if now >= haulJob.logAt:
+				haulJob.logAt = now + 2.0
+				Debug.l("COOP: BOT haul trial=%d id=%s d=%.0f mine=%s" % [trial, haulJob.id, d, own.mine.has(haulJob.id)])
+			if now > haulJob.until:
+				_haulEnd(plants, "closer" if d < haulJob.d0 - 200.0 else "nograb", d, now)
+
+func _toExcavator(plants, rock) -> float:
+	for p in plants:
+		var x = p.get("excavator")
+		if x != null and is_instance_valid(x):
+			return rock.global_position.distance_to(x.global_position)
+	return rock.global_position.distance_to(net.localShip.global_position)
+
+func _haulEnd(plants, result, d, now):
+	Debug.l("COOP: BOT haul trial=%d id=%s result=%s owned=%s d0=%.0f d1=%.0f" % [trial, haulJob.id, result, haulJob.owned,
+		haulJob.d0, d])
+	for p in plants:
+		p.enabled = false
+	haulJob = {"state": "idle", "id": "", "until": now + CLAW_GAP + 3.0}   # past the claim's linger
+	if trial >= trials:
+		Debug.l("COOP: BOT haul done, %d trials" % trials)
 
 # What the MPU does to a rock it owns: strip filler (mass drops, the mineral stays), then free it on the disabled
 # layer. Own sees it leave and sends o.eat with what is left.

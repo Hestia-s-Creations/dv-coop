@@ -400,6 +400,30 @@ def gate10r(insts):
     return ok and eaten > 0 and not simulated, ev
 
 
+def gatehaul(insts):
+    """Haul drones: a member's haul drones claim the rock they push (touch-to-own) and move it to their excavator (or
+    the MPU eats it); no trial hauls a rock it never owned; conservation and the ore audit hold (gate 10)."""
+    rows = [(i.name(),) + m.groups() for i in insts
+            for m in i.grep(r"COOP: BOT haul trial=(\d+) id=(\S+) result=(\S+) owned=(\w+) d0=(-?\d+) d1=(-?\d+)")]
+    if not rows:
+        none = sum(i.count(r"COOP: BOT haul: no haul drones") for i in insts)
+        return False, ["FAIL: no haul trials%s (run --coop-bot=haul,N on a member with SYSTEM_DND_HAUL)" % (
+            " (no haul drones on the bot's ship)" if none else "")]
+    good = [r for r in rows if r[3] in ("eaten", "closer") and r[4] == "True"]
+    unowned = [r for r in rows if r[3] in ("eaten", "closer") and r[4] != "True"]
+    ok10, ev10 = gate10(insts) if any(i.grep(r"COOP: OWN eat ") for i in insts) else (True, ["no eats (ore audit not needed)"])
+    counts = {}
+    for r in rows:
+        counts[r[3]] = counts.get(r[3], 0) + 1
+    ev = ["%d haul trials: %s; moved or eaten while owned: %d" % (len(rows), counts, len(good))]
+    ev += ["%s trial %s %s: %s owned=%s %s -> %s px" % r for r in rows[:10]]
+    ev += ["FAIL moved a rock it never owned: %s trial %s" % (r[0], r[1]) for r in unowned[:5]]
+    ev += ["gate 10: " + e for e in ev10]
+    if not good:
+        ev.append("FAIL: no rock was hauled while owned")
+    return bool(good) and not unowned and ok10, ev
+
+
 def _secs(line):
     m = re.search(r"\[\d+/\d+/\d+ (\d+):(\d+):(\d+)\]", line)
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
@@ -499,6 +523,7 @@ GATES = {
     6: gate6,
     10: gate10,
     "10r": gate10r,
+    "haul": gatehaul,
     7: gate7,
     8: gate8,
     9: gate9,

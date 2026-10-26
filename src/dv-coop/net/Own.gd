@@ -27,6 +27,8 @@ var mine = {}         # member: id -> node, rocks this machine owns (not as auth
 var heldHere = {}     # authority: id -> why, rocks the authority's own player is touching
 var tomb = {}         # authority: id -> time (s) it was consumed or fractured
 var reasons = {}      # id -> {why: true}: which local systems touch it (claw, hold, mpu, ...); released when empty
+var timed = {}       # id -> {why: [node, expiry (s)]}: touches that lapse unless refreshed (touchFor: haul drones)
+var backoff = {}     # id -> time (s) before which a denied timed touch isn't asked again
 var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run when granted
 var born = []         # member: ids of rocks born in our field (fracture shards of rocks we own), sent next tick
 var fractured = {}    # member: ids of rocks we owned that started fracturing, sent with the next o.new
@@ -55,6 +57,7 @@ func _ready():
 	name = "Own"
 	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new", "b.new"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
+	connect("denied", self, "_onTimedDenied")
 	call_deferred("_hook")
 
 func _hook():
@@ -128,6 +131,41 @@ func touch(node, why) -> bool:
 		"p": node.global_position, "r": node.global_rotation, "v": node.linear_velocity, "w": node.angular_velocity}, true)
 	Debug.l("COOP: OWN claim %s (%s) e=%d" % [id, why, epochOf(id)])
 	return false
+
+# A touch that lapses LINGER s after the last call, for systems that act on a rock in repeated hits with no
+# "let go" of their own (haul drones push their target every physics frame and just switch targets). After a deny
+# the claim isn't asked again for BACKOFF s.
+const TIMED_BACKOFF = 2.0
+
+func touchFor(node, why, linger) -> bool:
+	if not _inCell() or node == null or not node.has_meta("dvnet"):
+		return true
+	var id = node.get_meta("dvnet")
+	var now = _now()
+	if backoff.get(id, 0.0) > now:
+		return false
+	var first = not timed.has(id) or not timed[id].has(why)
+	if not timed.has(id):
+		timed[id] = {}
+	timed[id][why] = [node, now + linger]
+	if first:
+		return touch(node, why)
+	return mine.has(id) or heldHere.has(id)
+
+func _expireTimed(now):
+	for id in timed.keys():
+		for why in timed[id].keys():
+			if timed[id][why][1] <= now:
+				var n = timed[id][why][0]
+				timed[id].erase(why)
+				untouch(n, why)
+		if timed[id].empty():
+			timed.erase(id)
+
+func _onTimedDenied(id, why):
+	if timed.has(id):
+		timed.erase(id)
+		backoff[id] = _now() + TIMED_BACKOFF
 
 # The local system let go of `node`.
 func untouch(node, why):
@@ -601,6 +639,7 @@ func _physics_process(delta):
 	if role == "solo":
 		return
 	var now = _now()
+	_expireTimed(now)
 	for id in pending.keys():
 		if now - pending[id].at > CLAIM_TIMEOUT:
 			pending.erase(id)
