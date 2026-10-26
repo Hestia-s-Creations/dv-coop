@@ -260,25 +260,47 @@ def gate2(insts, arm=False):
     return not bad and (grabbed > 0 or not arm), ev
 
 
+def _kills(insts):
+    """peer -> wall ms of its hard-kill, from kills.txt that tools/gate_arm.py writes into the kept run dir
+    (<run>/<instance>/dV/logs/dv_log_*.txt, so four levels above a log)."""
+    out = {}
+    for i in insts:
+        f = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(i.path))))), "kills.txt")
+        if os.path.exists(f):
+            for row in open(f, encoding="utf-8").read().splitlines():
+                parts = row.split()
+                if len(parts) == 2 and parts[1].isdigit():
+                    out[parts[0]] = int(parts[1])
+    return out
+
+
 def gate3(insts):
-    """Holder hard-kill: the held rock is re-owned by the authority within 2 s of the holder's last log line."""
+    """Holder hard-kill: the held rock is re-owned by the authority within 2 s of the kill. Measured in ms from the
+    kill instant (kills.txt) to the reown line's wall ms; without those (older runs), from the holder's last log line,
+    whole seconds only."""
     ev = []
     ok = False
+    kills = _kills(insts)
     for i in insts:
         for line in i.lines:
-            m = re.search(r"COOP: OWN reown (\S+) from lost (\d+)", line)
+            m = re.search(r"COOP: OWN reown (\S+) from lost (\d+)(?:.* wall=(\d+))?", line)
             if not m:
                 continue
             holder = [h for h in insts if h.peer == m.group(2)]
-            last = _ts(holder[0].lines[-1]) if holder and holder[0].lines else None
-            dt = _ts(line) - last if last else None
+            if m.group(3) and m.group(2) in kills:
+                dt = (int(m.group(3)) - kills[m.group(2)]) / 1000.0
+                how = "%.2f s after the kill" % dt
+            else:
+                last = _ts(holder[0].lines[-1]) if holder and holder[0].lines else None
+                dt = _ts(line) - last if last else None
+                how = "%s s after the holder's last log line (1 s resolution)" % ("?" if dt is None else "%.0f" % dt)
             # a claw run must have held it in the arm, not through some other local claim (haul drones, the hold)
             claw = holder and holder[0].count(r"COOP: BOT claw ")
             inArm = not claw or holder[0].count(r"BOT claw holding id=%s .*locked=True" % re.escape(m.group(1))) > 0
             good = dt is not None and dt <= 2.0 and inArm
             ok = ok or good
-            ev.append("%s re-owned %s from %s, %s s after the holder's last log line%s%s" % (
-                i.name(), m.group(1), m.group(2), "?" if dt is None else "%.0f" % dt, "" if dt is not None and dt <= 2.0 else "  FAIL (>2 s)",
+            ev.append("%s re-owned %s from %s, %s%s%s" % (
+                i.name(), m.group(1), m.group(2), how, "" if dt is not None and dt <= 2.0 else "  FAIL (>2 s)",
                 "" if inArm else "  FAIL (the holder's arm never locked it)"))
     if not ev:
         ev.append("FAIL: no re-own (hard-kill a member holding a rock: --coop-bot=claw,1,hold)")

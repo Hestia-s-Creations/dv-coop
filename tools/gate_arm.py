@@ -102,10 +102,18 @@ def launch(label, extra):
     sh(["tools/savecheck.sh", "before", "arm-" + label])
 
 
+KILLS = []    # [(peer id, wall ms just before the kill)] in this run; stop() writes them next to the kept logs
+SCORES = {}   # gate -> passed, from the last stop()
+
+
 def stop(label, gates):
+    """Close the run, keep its logs (with kills.txt), and score each gate on its own; True when all of them pass."""
     out = sh(["tools/stop.sh"], check=False)
     log("send the lead: windows closed for gate %s" % label)
     sh(["tools/savecheck.sh", "after", "arm-" + label], check=False)
+    kills = list(KILLS)
+    del KILLS[:]
+    SCORES.clear()
     if not gates:
         return False
     m = re.search(r"logs kept in (\S+)", out)
@@ -115,8 +123,16 @@ def stop(label, gates):
     run = m.group(1)
     if WIN and re.match(r"^/([a-zA-Z])/", run):   # stop.sh prints a Git Bash path; Windows Python can't glob it
         run = run[1].upper() + ":" + run[2:]
-    r = subprocess.run([sys.executable, "tools/gate_m4.py", "--gates", gates] + glob.glob(os.path.join(run, "*", "dV", "logs", "dv_log_*.txt")), cwd=ROOT)
-    return r.returncode == 0
+    if kills:
+        # gate 3 measures kill -> reown from these (the game logs whole seconds; Own's reown line carries wall ms)
+        with open(os.path.join(run, "kills.txt"), "w") as f:
+            for p, ms in kills:
+                f.write("%s %d\n" % (p, ms))
+    logs = glob.glob(os.path.join(run, "*", "dV", "logs", "dv_log_*.txt"))
+    for g in gates.split(","):
+        r = subprocess.run([sys.executable, "tools/gate_m4.py", "--gates", g] + logs, cwd=ROOT)
+        SCORES[g] = r.returncode == 0
+    return all(SCORES.values())
 
 
 def wait_for(cond, limit, every=5):
@@ -143,6 +159,7 @@ def kill(inst):
     for row in out.splitlines():
         if tok in row.split():
             pid = row.split()[0]
+            KILLS.append((peer(inst), int(time.time() * 1000)))
             subprocess.run(["taskkill", "/PID", pid, "/F"] if WIN else ["kill", "-9", pid])
             log("hard-killed %s (pid %s, peer %s)" % (inst, pid, peer(inst)))
             return True
@@ -189,20 +206,21 @@ def phase34(attempt):
     # B and C both load the arm save and hold a rock (whichever of them is a member). Gate 4 needs a holder that
     # survives the authority's kill and is not the peer promoted in its place (the next-lowest id), so wait for both
     # holders, then pick the kill order from the ids; only when no holder qualifies does it fall back to gate 3 alone.
+    # Returns {"3": passed, "4": passed}, with None for a gate this launch could not stage.
     hold = "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT
     launch("3-4", {"B": hold, "C": hold})
     if not loadout_ok("3-4", "BC"):
-        return "fail"
+        return {"3": False, "4": False}
     if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
         log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
-        stop("3-4", "3,4")
-        return "retry"
+        stop("3-4", "")
+        return {"3": None, "4": None}
     ids = {i: peer(i) for i in "ABC"}
     auth = authority()
     x = [i for i in "ABC" if ids[i] == auth]
     if not x:
-        stop("3-4", "3,4")
-        return "retry"
+        stop("3-4", "")
+        return {"3": None, "4": None}
     x = x[0]
     survivors = [i for i in "ABC" if i != x]
     promoted = min(survivors, key=lambda i: ids[i])
@@ -221,11 +239,11 @@ def phase34(attempt):
     elif holders:
         kill(holders[0])   # gate 3 only: the holder is the one who would be promoted
     else:
-        stop("3-4", "3,4")
-        return "retry"
+        stop("3-4", "")
+        return {"3": None, "4": None}
     time.sleep(6)
-    ok = stop("3-4", "3,4" if four else "3")
-    return "ok" if ok and four else ("gate3-only" if ok else "fail")
+    stop("3-4", "3,4" if four else "3")   # each gate scored on its own
+    return {"3": SCORES.get("3"), "4": SCORES.get("4") if four else None}
 
 
 def phase10():
@@ -249,12 +267,19 @@ def main(argv):
         if p == "2":
             res["2r"] = phase2()
         elif p == "34":
+            # gates 3 and 4 are reported separately; relaunch (3 tries) while one of them is still unstaged, and
+            # keep a pass once seen (a later launch only adds the gate it couldn't stage before)
+            got = {"3": None, "4": None}
             for attempt in range(3):
                 r = phase34(attempt)
-                res["3,4"] = r
-                if r in ("ok", "fail"):
+                for g in got:
+                    if r[g] is not None and got[g] is not True:
+                        got[g] = r[g]
+                if None not in got.values():
                     break
-                log("relaunching for gate 4 (%s)" % r)
+                log("relaunching for gate(s) %s, not staged yet" % [g for g in got if got[g] is None])
+            res["3"] = bool(got["3"])
+            res["4"] = bool(got["4"])
         elif p == "10":
             res["10r"] = phase10()
     log("summary: %s" % res)

@@ -774,7 +774,9 @@ func _reownLost():
 		var e = epochOf(id) + 1
 		epoch[id] = e
 		_broadcast({"t": "o.chg", "id": id, "owner": net.myId, "e": e}, -1)
-		Debug.l("COOP: OWN reown %s from lost %s e=%d at %s" % [id, lost[id], e, CurrentGame.globalCoords(n.global_position) if n != null else "?"])
+		# wall ms: gate 3 measures it against the wall-clock instant tools/gate_arm.py killed the holder
+		Debug.l("COOP: OWN reown %s from lost %s e=%d at %s wall=%d" % [id, lost[id], e,
+			CurrentGame.globalCoords(n.global_position) if n != null else "?", OS.get_system_time_msecs()])
 
 # Member: whenever the authority changes, tell the new one which rocks we own.
 func _reportOwned():
