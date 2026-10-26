@@ -55,7 +55,7 @@ PHASES = {
               {"A": "--coop-bot=laser,4", "B": "--coop-bot=laser,4",
                "C": "--coop-slot=savegame-b.dv --coop-bot=massdriver,4"},
               ("C", r"COOP: BOT massdriver done, \d+ trials"), 7 * 60),
-    "haul": ("haul",          # C is always a member; haul drones push toward the excavator (the salvage arm): slot d TRTL
+    "haul": ("haul,memberfrac",          # C is always a member; haul drones push toward the excavator (the salvage arm): slot d TRTL
              {"OFF_B": "1200", "WARP_C_DIST": "900"},
              {"C": "--coop-slot=savegame-arm.dv --coop-bot=haul,3"},
              ("C", r"COOP: BOT haul done, \d+ trials"), 6 * 60),
