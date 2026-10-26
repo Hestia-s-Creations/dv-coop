@@ -9,13 +9,19 @@ extends Node
 #                           COOP: BOT race trial=i id=... owner=<peer> after claims, owner=<peer> after release (authority)
 #                         Members log the measured clock skew to the coordinator (sent time vs local time - rtt/2);
 #                         on one PC it is ~0, across machines it is what the agreed `at` is off by.
-#   --coop-bot=claw[,N]   gates 2-4. Run it on a member (dev3: C, which always joins as a member). Before the
-#                         dive it fits a salvage arm (SYSTEM_SALVAGE_ARM) into a weapon slot of the dev save's ship.
-#                         Each trial: pick the nearest tracked rock the arm can lift, teleport so the arm's dock
+#   --coop-bot=claw[,N]   gates 3-4. Run it on a member whose dev save's ship carries a salvage arm (the bot never
+#                         changes a loadout). Each trial: pick the nearest tracked rock the arm can lift, teleport so the arm's dock
 #                         area covers it at matching velocity, let the stock arm lock (= Own claim), hold CLAW_HOLD s,
 #                         release (arm off). Lines: COOP: BOT claw trial=i id=... result=granted|denied:<why>|nolock
 #                         and, while held, "COOP: BOT claw holding id=... at x,y" every second (for gates 3 and 4).
 #                         --coop-bot=claw,N,hold keeps the last rock in the claw instead of releasing it.
+#   --coop-bot=frac[,N]   gate 2, on every instance. The authority picks a rock a member can lift and that splits,
+#                         sends bot.frac {trial, id, at}, and at wall-clock `at` pushes it past its split threshold
+#                         (only if it still owns it). The member (salvage arm on its ship) reaches for it so the lock lands
+#                         around `at`. Lines: COOP: BOT frac trial=i id=... result=rock (claim granted first) |
+#                         shards (denied: fracturing, then the arm took a shard) | neither.
+#                         --coop-bot=frac,N,noarm: the member claims directly (Own.touch) at `at` +-jitter instead of
+#                         with an arm, and after a "fracturing" deny claims the first new rock near the parent.
 #   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
@@ -29,6 +35,9 @@ const CLAW_WAIT = 6.0       # s for the arm to lock and the claim to resolve
 const CLAW_HOLD = 3.0       # s a claw trial holds its rock
 const CLAW_GAP = 2.0        # s between claw trials
 const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
+const FRAC_EVERY = 8.0       # s between fracture-race trials
+const FRAC_LEAD = 1.5        # s between bot.frac and the fracture instant
+const FRAC_SHARD_WAIT = 4.0  # s a denied member waits for its arm to take a shard
 const SHOOT_TIME = 3.0
 const SHOOT_GAP = 3.0
 const SHOOT_DIST = {"laser": 600.0, "massdriver": 900.0}
@@ -46,14 +55,15 @@ var results = {}     # member: id -> trial waiting for granted / denied
 var checks = []      # authority: [{trial, id, at (s), what}]
 var keepLast = false # claw: hold the last rock instead of releasing it
 var armFitted = false
-var fitted = null    # {slot, was}: what _fit changed in CurrentGame.state.ship, restored by _restore()
-var ammoAdded = 0.0
-var wasDived = false
 var claw = {"state": "idle", "id": "", "until": 0.0, "result": ""}
 var holdLogAt = 0.0
 var shoot = {"state": "idle", "id": "", "until": 0.0}
 var pressed = ""     # input action held down for the current shot
 var noWeaponLogged = false
+var frac = {"state": "idle"}  # member: {state, trial, id, at (wall ms), until (s), pos}
+var fracPlan = []             # authority: [{trial, id, at}]
+var fracWatch = []            # authority: [{trial, id, pos, until, n}] counting the shards each fracture spawned
+var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
@@ -66,12 +76,14 @@ func _ready():
 			mode = parts[0]
 			trials = int(parts[1]) if parts.size() > 1 else 100
 			keepLast = parts.size() > 2 and parts[2] == "hold"
+			noArm = parts.size() > 2 and parts[2] == "noarm"
 	if mode == "":
 		Debug.l("COOP: BOT inactive")
 		set_physics_process(false)
 		return
 	Debug.l("COOP: BOT active mode=%s trials=%d" % [mode, trials])
 	net.on("bot.go", self, "_onGo")
+	net.on("bot.frac", self, "_onFrac")
 	call_deferred("_hook")
 
 func _hook():
@@ -79,6 +91,9 @@ func _hook():
 	if own != null:
 		own.connect("granted", self, "_onGranted")
 		own.connect("denied", self, "_onDenied")
+	var rs = _rs()
+	if rs != null:
+		rs.connect("rock_born", self, "_onRockBorn")
 
 func _own():
 	return net.get_node_or_null("Own")
@@ -94,16 +109,14 @@ func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
 func _physics_process(delta):
-	if net.dived:
-		wasDived = true
-	elif wasDived:
-		wasDived = false
-		_restore()   # the dive ended
 	if mode == "claw":
 		_clawTick()
 		return
 	if mode == "laser" or mode == "massdriver":
 		_shootTick()
+		return
+	if mode == "frac":
+		_fracTick()
 		return
 	if mode != "race":
 		return
@@ -197,6 +210,225 @@ func _member(now):
 			if node != null:
 				_own().untouch(node, "bot")
 
+# ---------------------------------------------------------------- fracture race (gate 2)
+
+func _fracTick():
+	_fitArm()
+	var c = _cell()
+	if c == null or not c.inCell():
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	if c.isAuthority():
+		_fracCoordinate(c, now)
+	else:
+		_fracMember(now)
+
+func _fracCoordinate(c, now):
+	var wall = OS.get_system_time_msecs()
+	for f in fracPlan.duplicate():
+		if wall >= f.at:
+			fracPlan.erase(f)
+			var n = _rs().nodeOf(f.id)
+			if n == null:
+				Debug.l("COOP: BOT frac trial=%d id=%s fracture skipped (gone)" % [f.trial, f.id])
+			elif _own().owners.has(f.id):
+				Debug.l("COOP: BOT frac trial=%d id=%s fracture skipped (owned by %s)" % [f.trial, f.id, _own().owners[f.id]])
+			else:
+				n.totalEnergy = n.splitEnergyThreshold * 1.5
+				n.set_physics_process(true)
+				n.set_process(true)   # fractureTime counts down in _process; the stock damage path wakes both
+				fracWatch.append({"trial": f.trial, "id": f.id, "pos": n.global_position, "until": now + 3.5, "n": 0})
+				Debug.l("COOP: BOT frac trial=%d id=%s fracture set" % [f.trial, f.id])
+	for w in fracWatch.duplicate():
+		if now >= w.until:
+			fracWatch.erase(w)
+			Debug.l("COOP: BOT frac trial=%d id=%s shards spawned=%d" % [w.trial, w.id, w.n])
+	if trial >= trials or now - inCellSince < SETTLE or now < nextAt:
+		return
+	var members = []
+	for p in c.members():
+		if p != net.myId:
+			members.append(p)
+	if members.empty():
+		return
+	var rs = _rs()
+	var best = ""
+	for id in rs.rocks:
+		var n = rs.rocks[id]
+		if not is_instance_valid(n) or n.get("fracturing") == true or not rs.isStreamed(id) or n.mass > CLAW_MASS:
+			continue
+		if n.get("asteroidClass") == null or n.asteroidClass >= 4 or n.get("splitEnergyThreshold") == null:
+			continue
+		if net.localShip == null or n.global_position.distance_to(net.localShip.global_position) > 10000.0:
+			continue   # stock fracture spawns shards only inside the authority's simulator range (12 km of its ship)
+		var all = true
+		for p in members:
+			if not rs.receivers.has(p) or not rs.receivers[p].known.has(id):
+				all = false
+				break
+		if all and (best == "" or id < best):
+			best = id
+	if best == "":
+		return
+	nextAt = now + FRAC_EVERY
+	trial += 1
+	var at = OS.get_system_time_msecs() + int(FRAC_LEAD * 1000)
+	fracPlan.append({"trial": trial, "id": best, "at": at})
+	for p in members:
+		net.send(p, {"t": "bot.frac", "trial": trial, "id": best, "at": at}, true)
+	Debug.l("COOP: BOT frac trial=%d id=%s at %d" % [trial, best, at])
+
+func _onRockBorn(id, node):
+	for w in fracWatch:
+		if node.global_position.distance_to(w.pos) < 1500.0:
+			w.n += 1
+
+func _onFrac(from, msg):
+	if mode != "frac" or frac.state != "idle":
+		return
+	frac = {"state": "wait", "trial": int(msg.trial), "id": str(msg.id), "at": int(msg.at), "until": 0.0, "pos": null}
+	var n = _rs().nodeOf(frac.id)
+	if n != null:
+		frac.pos = n.global_position
+
+func _fracMember(now):
+	if noArm:
+		_fracClaim(now)
+		return
+	var arm = _arm()
+	var ship = net.localShip
+	if arm == null or ship == null or ship.get("cutscene") == true:
+		return
+	var wall = OS.get_system_time_msecs()
+	match frac.state:
+		"wait":
+			if wall >= frac.at - 400:   # start reaching so the lock lands around the fracture instant
+				frac.state = "reach"
+				frac.until = now + 3.0
+				claw.id = frac.id
+				claw.result = ""
+				arm.enabled = true
+		"reach", "shards":
+			var rock = _rs().nodeOf(frac.id)
+			if rock != null and frac.state == "reach":
+				frac.pos = rock.global_position
+			var aim = frac.pos
+			var area = arm.get("areaDockArea")
+			if aim != null and area != null and not arm.locked:
+				var off = aim - area.global_position
+				if off.length() > 20.0:
+					ship.global_position += off
+					ship.reset_physics_interpolation()
+					if rock != null:
+						ship.linear_velocity = rock.linear_velocity
+			if frac.state == "reach":
+				if claw.result == "granted":
+					_fracEnd(arm, "rock", now)
+				elif claw.result.begins_with("denied"):
+					frac.state = "shards"
+					frac.until = now + FRAC_SHARD_WAIT
+					Debug.l("COOP: BOT frac trial=%d id=%s claim %s, waiting for a shard" % [frac.trial, frac.id, claw.result])
+				elif now > frac.until:
+					_fracEnd(arm, "neither", now)
+			else:
+				for id in _own().mine:
+					if id != frac.id:
+						_fracEnd(arm, "shards", now, id)
+						return
+				if now > frac.until:
+					_fracEnd(arm, "neither", now)
+
+# Protocol race without an arm: claim at the agreed instant (jittered so either side can win), then shards.
+func _fracClaim(now):
+	var wall = OS.get_system_time_msecs()
+	var rs = _rs()
+	for id in holding.keys():
+		if now >= holding[id]:
+			holding.erase(id)
+			var hn = rs.nodeOf(id)
+			if hn != null:
+				_own().untouch(hn, "bot")
+	match frac.state:
+		"wait":
+			if not frac.has("jit"):
+				frac.jit = int(rand_range(-150, 400))   # both orders occur: the fracture flag appears a tick after `at`
+				frac.before = {}
+				for id in rs.tracked:
+					frac.before[id] = true
+			if wall >= frac.at + frac.jit:
+				var n = rs.nodeOf(frac.id)
+				if n == null:
+					# the authority's fracture won: the parent left the stream before our claim. Go for its shards.
+					frac.state = "shards"
+					frac.until = _secs() + FRAC_SHARD_WAIT
+					claw.id = ""
+					claw.result = ""
+					return
+				frac.pos = n.global_position
+				frac.state = "claim"
+				frac.until = now + 3.0
+				claw.id = frac.id
+				claw.result = ""
+				if _own().touch(n, "bot"):
+					claw.result = "granted"
+		"claim":
+			if claw.result == "granted":
+				_fracDone("rock", frac.id, "jitter %d ms" % frac.jit)
+			elif claw.result.begins_with("denied"):
+				frac.state = "shards"
+				frac.until = now + FRAC_SHARD_WAIT
+				claw.id = ""
+				claw.result = ""
+			elif now > frac.until:
+				_fracDone("neither", "", "no answer")
+		"shards":
+			if claw.id != "":
+				if claw.result == "granted":
+					_fracDone("shards", claw.id, "jitter %d ms" % frac.jit)
+					return
+				if claw.result.begins_with("denied"):
+					claw.id = ""
+					claw.result = ""
+			else:
+				for id in rs.tracked:
+					var n = rs.tracked[id].n
+					if not frac.before.has(id) and id != frac.id and is_instance_valid(n) and frac.pos != null 							and n.global_position.distance_to(frac.pos) < 1500.0:
+						claw.id = id
+						claw.result = ""
+						if _own().touch(n, "bot"):
+							claw.result = "granted"
+						break
+			if now > frac.until:
+				var newIds = 0
+				var nearest = -1.0
+				for id in rs.tracked:
+					var tn = rs.tracked[id].n
+					if not frac.before.has(id) and is_instance_valid(tn):
+						newIds += 1
+						if frac.pos != null:
+							var d = tn.global_position.distance_to(frac.pos)
+							if nearest < 0 or d < nearest:
+								nearest = d
+				_fracDone("neither", "", "no shard claimed; %d new tracked rocks, nearest %.0f px from the parent, pos known %s" % [newIds, nearest, frac.pos != null])
+
+func _fracDone(result, got, note):
+	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s (%s)" % [frac.trial, frac.id, result, "" if got == "" else " got=%s" % got, note])
+	if got != "":
+		holding[got] = _secs() + 1.0   # release after a second (member tick in race mode does the release)
+	claw.id = ""
+	claw.result = ""
+	frac = {"state": "idle"}
+
+func _fracEnd(arm, result, now, got = ""):
+	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s" % [frac.trial, frac.id, result, "" if got == "" else " (holding %s)" % got])
+	arm.enabled = false
+	claw.id = ""
+	claw.result = ""
+	frac = {"state": "idle"}
+
 # ---------------------------------------------------------------- laser / mass driver
 
 func _findWeapon(n):
@@ -211,11 +443,8 @@ func _findWeapon(n):
 			return r
 	return null
 
-var ammoGiven = false
 
 func _shootTick():
-	if mode == "massdriver":
-		_fit("SYSTEM_EMD14", "right")
 	var c = _cell()
 	if c == null or not c.inCell() or c.isAuthority():
 		inCellSince = -1.0
@@ -226,11 +455,6 @@ func _shootTick():
 	var ship = net.localShip
 	if ship == null or not is_instance_valid(ship) or ship.get("cutscene") == true or now - inCellSince < SETTLE:
 		return
-	if mode == "massdriver" and not ammoGiven and ship.has_method("addAmmo"):
-		ammoGiven = true
-		ship.addAmmo(5000)
-		ammoAdded = 5000.0
-		Debug.l("COOP: BOT massdriver: +5000 kg ammo")
 	var w = _findWeapon(ship)
 	if w == null:
 		if not noWeaponLogged:
@@ -310,52 +534,15 @@ func _pickTarget() -> String:
 
 # ---------------------------------------------------------------- claw
 
-# Fit a salvage arm into the dev save's ship right after autodive loads the save, before the Game scene builds it.
+# The bot never changes a ship's loadout: that would mean writing CurrentGame.state.ship, which a save could persist.
+# Claw / frac modes need a dev save whose ship already carries a salvage arm, massdriver mode one with a mass driver
+# (dev3: SLOT_B=savegame-b.dv puts the TRTL, which has an EMD-14, on B).
 func _fitArm():
-	_fit("SYSTEM_SALVAGE_ARM", "left")
-
-# Fit `system` into a weapon slot of the dev save's ship right after autodive loads the save, before the Game
-# scene builds the ship (dev data only; the bot never runs without its flag).
-func _fit(system, prefer):
-	if armFitted or not net.autoDiveStarted:
+	if armFitted or net.localShip == null or not is_instance_valid(net.localShip) or net.localShip.get("setup") != true:
 		return
 	armFitted = true
-	var cfg = CurrentGame.state.ship.get("config", {})
-	var ws = cfg.get("weaponSlot", {})
-	if ws.empty():
-		Debug.l("COOP: BOT %s: ship has no weapon slots in its config, cannot fit %s" % [mode, system])
-		return
-	for k in ws:
-		if ws[k].get("type") == system:
-			Debug.l("COOP: BOT %s: %s already fitted in weaponSlot.%s" % [mode, system, k])
-			return
-	var slot = prefer if ws.has(prefer) else ws.keys()[0]
-	Debug.l("COOP: BOT %s: fitting %s to weaponSlot.%s (was %s)" % [mode, system, slot, ws[slot].get("type")])
-	fitted = {"slot": slot, "was": ws[slot].get("type")}
-	ws[slot]["type"] = system
-
-# Put the dev save's ship back as it was: the fitting lives in CurrentGame.state.ship (the live ship's shipConfig is
-# that same dict), so undo it before anything could save it. Runs when the dive ends, on quit and on exit.
-func _restore():
-	if fitted != null:
-		var ws = CurrentGame.state.ship.get("config", {}).get("weaponSlot", {})
-		if ws.has(fitted.slot):
-			ws[fitted.slot]["type"] = fitted.was
-			Debug.l("COOP: BOT restored weaponSlot.%s to %s" % [fitted.slot, fitted.was])
-		fitted = null
-	if ammoAdded > 0:
-		var ship = net.localShip
-		if ship != null and is_instance_valid(ship) and ship.has_method("drawAmmo"):
-			ship.drawAmmo(ammoAdded)
-			Debug.l("COOP: BOT took back %.0f kg ammo" % ammoAdded)
-		ammoAdded = 0.0
-
-func _notification(what):
-	if what == NOTIFICATION_WM_QUIT_REQUEST or what == NOTIFICATION_PREDELETE:
-		_restore()
-
-func _exit_tree():
-	_restore()
+	if _arm() == null:
+		Debug.l("COOP: BOT %s: no salvage arm on this ship (the bot never changes a loadout); use a dev save that has one" % mode)
 
 func _arm():
 	var ship = net.localShip
@@ -459,6 +646,10 @@ func _pickClawRock(ship) -> String:
 	return best
 
 func _onGranted(id):
+	if mode == "frac":
+		if claw.id == id:
+			claw.result = "granted"
+		return
 	if mode == "claw":
 		if claw.id == id and claw.state == "reach":
 			claw.result = "granted"
@@ -471,6 +662,10 @@ func _onGranted(id):
 	holding[id] = _secs() + RACE_HOLD
 
 func _onDenied(id, why):
+	if mode == "frac":
+		if claw.id == id:
+			claw.result = "denied:" + str(why)
+		return
 	if mode == "claw":
 		if claw.id == id and claw.state == "reach":
 			claw.result = "denied:" + str(why)
