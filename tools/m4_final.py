@@ -50,15 +50,33 @@ PHASES = {
              {"OFF_B": "1200", "WARP_C_DIST": "900"},
              {"A": "--coop-bot=race,100", "B": "--coop-bot=race,100", "C": "--coop-bot=race,100"},
              ("AB", r"COOP: BOT race done, \d+ trials sent"), 9 * 60),
+    # C warps into the A+B cell, so it is never the authority; A and B both carry a laser (B on its seeded copy of
+    # savegame.dv: its default savegame-b.dv has none, and run 064428 drew A as authority: no shooter, no hits), so
+    # whichever of them is the authority, the other shoots, and C's mass driver always fires as a member
     "shoot": ("5,6",
               {"OFF_B": "1200", "WARP_C_DIST": "900"},
-              {"A": "--coop-bot=laser,4", "B": "--coop-bot=laser,4",
+              {"A": "--coop-bot=laser,4", "B": "--coop-slot=savegame.dv --coop-bot=laser,4",
                "C": "--coop-slot=savegame-b.dv --coop-bot=massdriver,4"},
               ("C", r"COOP: BOT massdriver done, \d+ trials"), 7 * 60),
-    "haul": ("haul,memberfrac",          # C is always a member; haul drones push toward the excavator (the salvage arm): slot d TRTL
+    # gate 5's relay path, staged: the shooters hold forwarded hits 1.5 s and claim their target 1 s into each trial, so
+    # the hits reach the old owner after its grant and must be relayed to the shooter (gate 5: relayed >= 1, lost = 0).
+    # Even trials let go 0.2 s after the grant and their o.rel waits 0.7 s (under Own.OWNER_SILENT 1.2 s, past which the
+    # authority takes the rock back as lost: run 061759), so relayed hits come back to an authority
+    # that still names the shooter and must be held there (gate 5: held >= 1, at most 2 relays per hit)
+    "relay": ("5",
+              {"OFF_B": "1200", "WARP_C_DIST": "900"},
+              {"A": "--coop-bot=laser,6,claim --coop-dev-dmg-delay=1.5 --coop-dev-rel-delay=0.7",
+               "B": "--coop-slot=savegame.dv --coop-bot=laser,6,claim --coop-dev-dmg-delay=1.5 --coop-dev-rel-delay=0.7",
+               "C": "--coop-bot=laser,6,claim --coop-dev-dmg-delay=1.5 --coop-dev-rel-delay=0.7"},
+              ("ABC", r"COOP: BOT laser done, \d+ trials"), 6 * 60, 20),
+    # B and C both load the arm save (slot d TRTL: haul drones, salvage arm as the excavator) and run the haul bot:
+    # only one of A, B, C is the cell authority (lowest peer id), so at least one of B and C is a member and runs it
+    # (the authority's bot logs "haul idle"). The phase ends when one of them is done.
+    "haul": ("haul,memberfrac",
              {"OFF_B": "1200", "WARP_C_DIST": "900"},
-             {"C": "--coop-slot=savegame-arm.dv --coop-bot=haul,3"},
-             ("C", r"COOP: BOT haul done, \d+ trials"), 6 * 60),
+             {"B": "--coop-slot=savegame-arm.dv --coop-bot=haul,3",
+              "C": "--coop-slot=savegame-arm.dv --coop-bot=haul,3"},
+             ("BC", r"COOP: BOT haul done, \d+ trials"), 7 * 60),
 }
 
 

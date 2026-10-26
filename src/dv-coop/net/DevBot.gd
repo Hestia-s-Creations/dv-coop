@@ -27,15 +27,22 @@ extends Node
 #                         velocity, and lets the stock MPU claim (Own.touch "mpu"), process and free it (o.eat). Lines:
 #                         COOP: BOT mpu trial=i id=... result=eaten|denied:<why>|nograb|timeout, and "no MPU" if none.
 #   --coop-bot=haul[,N]   on a member whose ship has haul drones (SYSTEM_DND_HAUL; Cothon-V in savegame.dv). Each
-#                         trial places the ship HAUL_OFFSET px from the nearest tracked mineral rock nobody owns (haul
-#                         drones only take "pickable" rocks), switches the haul plants on and watches HAUL_TIME s while
-#                         the drones claim it (Own.touchFor "haul") and push it to the excavator (the MPU intake).
-#                         Lines: COOP: BOT haul trial=i id=... d0=<px to excavator> ... result=eaten|closer|nograb
+#                         trial places the ship just outside the drones' fly-in zone (see _haulCheck) from the nearest
+#                         tracked mineral rock nobody owns that the plant takes, switches the arm off and the haul plants
+#                         on, and watches HAUL_TIME s while the drones claim it (Own.touchFor "haul") and fly it to the
+#                         gathering spot. Lines: COOP: BOT haul trial=i id=... d0=<px to the gathering spot> ...
+#                         result=eaten|closer|nograb
 #                         owned=<did we own it while hauling> d1=<px at the end>.
 #   --coop-bot=laser[,N] / --coop-bot=massdriver[,N]   gates 5 and 6. On a member with that weapon: each trial picks
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
 #                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
+#                         laser,N,claim (gate 5 relay staging, with --coop-dev-dmg-delay): CLAIM_AFTER s into each
+#                         trial the bot claims the rock it is lasering and holds it to the trial's end, so hits it
+#                         forwarded before the claim reach the old owner after the grant and are relayed back.
+#                         Even trials let go CLAIM_SHORT s after the grant instead (with --coop-dev-rel-delay), so the
+#                         relayed hits reach us after we let go and go back to an authority that still names us: held.
+#                         Lines: COOP: BOT laser trial=i id=... claim / claim result=owned|not-owned, released.
 #   --coop-bot=eat[,N]    gate 10 (protocol level, no MPU fitted), on a member. Each trial claims a tracked rock the
 #                         authority owns (outside the frac bot's pool, mineral rocks first), strips half its filler
 #                         (ice rocks: half their mass) the way the MPU does,
@@ -62,7 +69,13 @@ const MPU_WAIT = 6.0         # s for the intake to take a rock and the claim to 
 const MPU_EAT = 90.0         # s for the MPU to finish processing it
 const MPU_MINERAL_WAIT = 240.0  # s the mpu bot keeps trying to get a mineral rock eaten before taking any rock
 const MPU_MINERAL_EAT_MAX = 150.0  # s of filler processing a mineral may need to be picked
-const HAUL_OFFSET = 700.0   # px from the rock to the ship when a haul trial starts
+# Stock haul drones (drone-plant.gd desiredVelicityFor) fly a rock in at haulVelocity only while it is farther than
+# minimum proximity + haul distance from the excavator; nearer, they only crawl it toward the gathering spot, and they
+# drop a rock whose push isn't worth it (mass * dv^2 / dist <= minEnergyToTarget, every scan). So a trial places the
+# ship outside that zone but near enough for the check (with margin), picks a rock the plant would take (its mineral filter,
+# heavy enough), switches the arm off (a claw grab is not a haul), and measures the distance to the gathering spot.
+const HAUL_MIN_CHECK = 3.0  # x minEnergyToTarget: the stock target check at placement, with margin
+const HAUL_MAX_OFFSET = 1200.0
 const HAUL_TIME = 40.0      # s a haul trial watches the drones
 const SHOOT_TIME = 3.0
 const SHOOT_GAP = 3.0
@@ -90,8 +103,11 @@ var frac = {"state": "idle"}  # member: {state, trial, id, at (wall ms), until (
 var fracPlan = []             # authority: [{trial, id, at}]
 var fracWatch = []            # authority: [{trial, id, pos, until, n}] counting the shards each fracture spawned
 var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
+var shootClaim = false        # laser,N,claim: claim the target mid-trial (gate 5 relay staging)
+const CLAIM_AFTER = 1.0       # s into a laser,N,claim trial
+const CLAIM_SHORT = 0.2       # s an even laser,N,claim trial holds the rock once granted
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
-const MAX_ATTEMPTS = 10
+const MAX_ATTEMPTS = 20
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 var eatJob = {"id": "", "until": 0.0, "result": ""}
 var mpuJob = {"state": "idle", "id": "", "until": 0.0}   # mpu: feed (intake on the rock, claim pending) -> eat
@@ -99,6 +115,12 @@ var mpuChecked = false
 var mpuMineralSince = -1.0   # mpu: when the bot started looking for a mineral rock to feed first
 var mpuMineralFed = false
 var haulJob = {"state": "idle", "id": "", "until": 0.0}   # haul: watch -> result
+# --coop-bot=haul,N,solo: the stock baseline. The same trials on a ship that is in no cell (dived far from everyone), so
+# RockSync and Own leave its rocks alone: candidates are the field's own rocks, nothing is claimed, the bot breaks
+# class-4 rocks itself. Lines say "BOT haul-solo" so the co-op haul gate never counts them.
+var haulSolo = false
+var haulIdleLogged = false
+var haulSeen = {}   # rock id -> identification state last logged (solo vs co-op evidence: is a mirrored shard identified as stock?)
 
 func _ready():
 	name = "DevBot"
@@ -109,6 +131,8 @@ func _ready():
 			trials = int(parts[1]) if parts.size() > 1 else 100
 			keepLast = parts.size() > 2 and parts[2] == "hold"
 			noArm = parts.size() > 2 and parts[2] == "noarm"
+			haulSolo = parts.size() > 2 and parts[2] == "solo"
+			shootClaim = parts.size() > 2 and parts[2] == "claim"
 	if mode == "":
 		Debug.l("COOP: BOT inactive")
 		set_physics_process(false)
@@ -140,8 +164,122 @@ func _cell():
 func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
+# Read-only evidence for a bot ship running dry (helpless: no remass -> the stock rescue tow docks it home, which
+# saves the slot): every SHIP_LOG_EVERY s, "COOP: BOT ship remass=kg/max cap=.. drones=kg/max helpless=.. cutscene=..
+# rate=kg/s leak=.. reactorT=K impacts=n maxImpact=..". A bot ship never fires its engines (it is teleported), so it
+# burns ~0.5 kg/s (turbine 0.1 kg/s + attitude); every engine of a TRTL at full burn is ~157 kg/s (K37 main 7500 and
+# 8 K37 RCS 2000 at Isp 15: thrust / (Isp * 10) kg/s each). More than that is the stock nuclear reactor leaking (up to
+# 500 kg/s above 1000 K once its leak damage is past 25%; every frame at full damage), and on a player ship only impacts
+# crack it (Reactor._on_impact): run 081334, B drained 530 kg/s for 60 s from 08:11:24 (while it seeded and reached),
+# went helpless and was towed home, which saved its slot; the 063348 escape left the arm save at leak 9600/9600, and
+# every run on it drained the same 530 kg/s from the load.
+# Past DRAIN_KG_S the bot stops ("COOP: BOT ship draining"; the gates fail on it and on helpless=True).
+const SHIP_LOG_EVERY = 10.0
+const DRAIN_KG_S = 100.0
+var shipLogAt = 0.0
+var shipLogMass = -1.0   # remass at the last line, out of a cutscene (-1: none yet)
+var impactShip = null
+var impacts = 0
+var impactMax = 0.0
+var impactLogged = 0     # impacts already in an "impact" line
+var impactLogAt = 0.0
+var drained = false
+
+func _onImpact(power, _point, _delta):
+	impacts += 1
+	impactMax = max(impactMax, power)
+
+func _leak(ship) -> float:
+	var r = ship.get_node_or_null("reactor")
+	return r.getCondition("leak") if r != null and r.has_method("getCondition") else -1.0
+
+func _shipLog():
+	var now = _secs()
+	var ship = net.localShip if net != null else null
+	if ship == null or not is_instance_valid(ship):
+		return
+	if impactShip != ship and ship.has_signal("damageImpact"):
+		impactShip = ship
+		ship.connect("damageImpact", self, "_onImpact")
+	if impacts > impactLogged and now >= impactLogAt:
+		impactLogAt = now + 1.0
+		Debug.l("COOP: BOT ship impact n=%d max=%.0f leak=%.3f" % [impacts - impactLogged, impactMax, _leak(ship)])
+		impactLogged = impacts
+	if now < shipLogAt:
+		return
+	var rm = float(ship.get("reactiveMass"))
+	var rate = (shipLogMass - rm) / (now - shipLogAt + SHIP_LOG_EVERY) if shipLogMass >= 0 else 0.0
+	shipLogMass = rm if ship.get("cutscene") != true else -1.0
+	shipLogAt = now + SHIP_LOG_EVERY
+	var r = ship.get_node_or_null("reactor")
+	Debug.l("COOP: BOT ship remass=%.0f/%.0f cap=%.0f drones=%.1f/%.1f helpless=%s cutscene=%s rate=%.1f leak=%.3f reactorT=%.0f impacts=%d maxImpact=%.0f" % [
+		rm, ship.get("reactiveMassMax"), ship.get("capacitor"), ship.get("droneParts"), ship.get("dronePartsMax"),
+		ship.isHelpless() if ship.has_method("isHelpless") else "?", ship.get("cutscene"), rate, _leak(ship),
+		r.get("temperature") if r != null and r.get("temperature") != null else -1.0, impacts, impactMax])
+	if rate > DRAIN_KG_S and not drained:
+		drained = true
+		Debug.l("COOP: BOT ship draining %.0f kg/s (leak=%.3f impacts=%d maxImpact=%.0f): the bot stops" % [rate,
+			_leak(ship), impacts, impactMax])
+
+# Is the spot a teleport would put the ship on free of other bodies? Landing on a rock is an impact (see DRAIN_KG_S).
+# A blocked target is passed over for SPOT_RETRY s. Other players' ships (their puppets here) must also be SHIP_APART
+# px away: run 084817, B and C reached for the same rock in the same second and teleported onto each other (impacts of
+# 665k and 571k, both reactors cracked); a puppet lags its ship, so the margin is wide. Rocks nearer another player's
+# ship than ours are theirs to pick (_theirs), so two bots never reach for one rock.
+const SPOT_RADIUS = 250.0
+const SPOT_RETRY = 5.0
+const SHIP_APART = 700.0
+var spotBlocked = {}   # id -> s until it may be picked again
+
+func _otherShips() -> Array:
+	var out = []
+	for p in net.peers.values():
+		var s = p.get("puppet")
+		if s != null and is_instance_valid(s) and s is Node2D:
+			out.append(s)
+	return out
+
+func _theirs(ship, n) -> bool:
+	var d = n.global_position.distance_to(ship.global_position)
+	for s in _otherShips():
+		if n.global_position.distance_to(s.global_position) < d:
+			return true
+	return false
+
+func _spotClear(ship, pos, id, rock) -> bool:
+	var now = _secs()
+	if spotBlocked.get(id, 0.0) > now:
+		return false
+	var q = Physics2DShapeQueryParameters.new()
+	var c = CircleShape2D.new()
+	c.radius = SPOT_RADIUS
+	q.set_shape(c)
+	q.transform = Transform2D(0.0, pos)
+	q.collision_layer = ship.collision_mask
+	var ex = [ship, rock]   # and the ship's own attached bodies and cargo
+	for k in ["physicsExclude", "cargo", "temporaryCargo"]:
+		if ship.get(k) is Array:
+			ex += ship.get(k)
+	q.exclude = ex
+	for s in _otherShips():
+		if s.global_position.distance_to(pos) < SHIP_APART:
+			spotBlocked[id] = now + SPOT_RETRY
+			Debug.l("COOP: BOT teleport for id=%s too near %s's ship, passed over %.0f s" % [id, s.name, SPOT_RETRY])
+			return false
+	for h in ship.get_world_2d().direct_space_state.intersect_shape(q, 16):
+		var o = h.get("collider")
+		if o != null and is_instance_valid(o) and not ex.has(o) and not ship.is_a_parent_of(o):
+			spotBlocked[id] = now + SPOT_RETRY
+			Debug.l("COOP: BOT teleport for id=%s blocked by %s, passed over %.0f s" % [id, o.name, SPOT_RETRY])
+			return false
+	return true
+
 func _physics_process(delta):
 	_fitArm()
+	if mode != "":
+		_shipLog()
+	if drained:
+		return
 	if not seedWatch.empty():
 		_seedWatchTick(_secs())
 	if mode == "claw":
@@ -404,7 +542,7 @@ func _mpuTick():
 				if off.length() > 10.0:
 					ship.global_position += off
 					ship.reset_physics_interpolation()
-				ship.linear_velocity = rock.linear_velocity
+				ship.linear_velocity = _shipVel(rock.linear_velocity)
 			if rock.get("fracturing") == true:
 				mpuJob.fracturing = true
 			if mpuJob.state == "feed":
@@ -441,14 +579,20 @@ func _haulPlants(n, out):
 func _haulTick():
 	var ship = net.localShip
 	var c = _cell()
-	if ship == null or not is_instance_valid(ship) or c == null or not c.inCell() or c.isAuthority() or not armFitted:
+	var placed = ship != null and is_instance_valid(ship) and armFitted and (
+		(not haulSolo and c != null and c.inCell() and not c.isAuthority()) or (haulSolo and (c == null or not c.inCell())))
+	if not placed:
 		inCellSince = -1.0
+		if not haulSolo and c != null and c.inCell() and c.isAuthority() and not haulIdleLogged:
+			haulIdleLogged = true   # gate haul tells "no member ran the bot" from "no trials"
+			Debug.l("COOP: BOT haul idle: this instance is the cell authority (the haul bot runs on members)")
 		return
 	var now = _secs()
 	if inCellSince < 0:
 		inCellSince = now
 	if ship.get("cutscene") == true or now - inCellSince < SETTLE:
 		return
+	var tag = "haul-solo" if haulSolo else "haul"
 	var plants = _haulPlants(ship, [])
 	if plants.empty():
 		if not noWeaponLogged:
@@ -461,63 +605,179 @@ func _haulTick():
 		"idle":
 			if trial >= trials or now < haulJob.until:
 				return
+			var plant = plants[0]
+			var hv = float(plant.get("haulVelocity"))
+			var cut = float(plant.get("minEnergyToTarget"))
+			var zone = plant.getMinProximity() * 10 + plant.getProximity() * 10
+			var rmax = plant.getRangeMax() * 10 - 300
 			var best = ""
 			var bestD = 0.0
-			for id in rs.tracked:
-				var n = rs.tracked[id].n
+			var light = 0
+			var unidentified = 0
+			var pool = {}
+			if haulSolo:
+				for n in get_tree().get_nodes_in_group("pickable"):
+					pool["solo:%d" % n.get_instance_id()] = n
+			else:
+				for id in rs.tracked:
+					pool[id] = rs.tracked[id].n
+			for id in pool:
+				_haulSeen(ship, plant, id, pool[id], tag)
+			for id in pool:
+				var n = pool[id]
 				if not is_instance_valid(n) or not n.is_in_group("pickable") or n.get("fracturing") == true \
-						or own.owners.has(id) or skipIds.has(id):
+						or own.owners.has(id) or skipIds.has(id) or not n is RigidBody2D \
+						or n.global_position.distance_to(ship.global_position) > 8000.0:
+					continue
+				# ship.isValidMineralTarget passes any rock the lidar hasn't identified yet (albedo only), then judges it
+				# by its minerals (hud/MineralMark identifyMinerals, value 0) and later by its value (identifyValue) against
+				# the plant's min value: only rocks identified down to their value, and wanted, are trial targets
+				if plant.get("mineralTargetting"):
+					var idf = ship.get("identifiedObjects").get(hash(n))
+					if idf == null or not idf[1]:
+						unidentified += 1
+						continue
+					if not ship.isValidMineralTarget(n, plant.get("mineralConfig")):
+						continue
+				if n.mass * hv * hv / (HAUL_MIN_CHECK * cut) < zone + 50:
+					light += 1   # too light to be worth a push from outside the fly-in zone
 					continue
 				var d = n.global_position.distance_to(ship.global_position)
 				if best == "" or d < bestD:
 					best = id
 					bestD = d
 			if best == "":
-				_seedMinerals(ship, now)   # haul drones take mineral rocks only, which come from class-4 fractures
+				if haulSolo:
+					_seedSolo(ship, now)
+				else:
+					_seedMinerals(ship, now)   # haul drones take mineral rocks only, which come from class-4 fractures
 				return
 			trial += 1
 			skipIds[best] = true
-			var rock = rs.nodeOf(best)
+			var rock = pool[best]
+			var offset = clamp(min(rock.mass * hv * hv / (HAUL_MIN_CHECK * cut), HAUL_MAX_OFFSET), zone + 50, rmax)
+			# the rock on the far side of the ship from the gathering spot, so the drones fly it past the ship
 			var away = (ship.global_position - rock.global_position).normalized()
+			var x = plant.get("excavator")
+			if x != null and is_instance_valid(x):
+				var g = x.global_position + plant.get("haulGatherSpot").rotated(x.global_rotation) - ship.global_position
+				if g.length() > 1.0:
+					away = g.normalized()
 			if away == Vector2.ZERO:
 				away = Vector2(0, 1)
-			ship.global_position = rock.global_position + away * HAUL_OFFSET
-			ship.linear_velocity = rock.linear_velocity
+			ship.global_position = rock.global_position + away * offset
+			ship.linear_velocity = _shipVel(rock.linear_velocity)
 			ship.reset_physics_interpolation()
+			var arm = _arm()
+			if arm != null:
+				arm.enabled = false
 			for p in plants:
 				p.enabled = true
-			haulJob = {"state": "watch", "id": best, "until": now + HAUL_TIME, "d0": _toExcavator(plants, rock),
-				"owned": false, "logAt": now + 2.0}
-			Debug.l("COOP: BOT haul trial=%d id=%s d0=%.0f placed" % [trial, best, haulJob.d0])
+			var check = _haulCheck(plant, rock)
+			var idf = ship.get("identifiedObjects").get(hash(rock))
+			var cfg = plant.get("mineralConfig") if plant.get("mineralConfig") != null else {}
+			var valid = check >= HAUL_MIN_CHECK * cut and offset >= zone
+			haulJob = {"state": "watch", "id": best, "node": rock, "until": now + HAUL_TIME, "d0": _toGather(plants, rock),
+				"owned": haulSolo, "logAt": now + 2.0}
+			Debug.l(("COOP: BOT " + tag + " trial=%d id=%s d0=%.0f placed (offset %.0f px, stock check %.0f vs cut %.0f, valid=%s;" +
+				" fly-in zone %.0f px, haulVelocity %.0f, mass %.1f, %d lighter / %d unidentified skipped, drones %.1f kg;" +
+				" identified %s value %s, plant wants %s min value %s)") % [trial, best, haulJob.d0, offset, check, cut, valid,
+				zone, hv, rock.mass, light, unidentified, ship.get("droneParts"), idf[0] if idf != null else "-",
+				idf[1] if idf != null else "-", cfg.get("minerals", "any"), cfg.get("minValue", 0)])
 		"watch":
-			var rock = rs.nodeOf(haulJob.id)
+			var rock = haulJob.node if haulSolo else rs.nodeOf(haulJob.id)
 			if rock == null or not is_instance_valid(rock):
 				_haulEnd(plants, "eaten", -1.0, now)
 				return
 			if own.mine.has(haulJob.id):
 				haulJob.owned = true
-			var d = _toExcavator(plants, rock)
+			var d = _toGather(plants, rock)
 			if now >= haulJob.logAt:
 				haulJob.logAt = now + 2.0
-				Debug.l("COOP: BOT haul trial=%d id=%s d=%.0f mine=%s" % [trial, haulJob.id, d, own.mine.has(haulJob.id)])
+				var pl = plants[0]
+				var dr = pl.get("drones")
+				Debug.l(("COOP: BOT %s trial=%d id=%s d=%.0f mine=%s check=%.0f | plant target=%s emitting=%s" +
+					" readpower=%s | rock layer=%x mode=%d sleeping=%s tracked=%s | scan: inTargets=%s dist=%.0f range=%.0f..%.0f" +
+					" sysOK=%s mineralOK=%s parentOK=%s") % [tag, trial, haulJob.id, d,
+					haulSolo or own.mine.has(haulJob.id), _haulCheck(pl, rock),
+					"this" if pl.get("target") == rock else ("none" if pl.get("target") == null else str(pl.get("target").name)),
+					dr.get("emitting") if dr != null else "?", pl.get("readpower"), rock.collision_layer, rock.mode,
+					rock.sleeping, rock.has_meta("dvnet_tracked"), pl.getPossibleTargets().has(rock),
+					pl.global_position.distance_to(rock.global_position), pl.getRangeMin() * 10, pl.getRangeMax() * 10,
+					ship.isValidSystemTarget(pl, rock), ship.isValidMineralTarget(rock, pl.get("mineralConfig")),
+					rock.get_parent() == ship.get_parent()])
 			if now > haulJob.until:
-				_haulEnd(plants, "closer" if d < haulJob.d0 - 200.0 else "nograb", d, now)
+				_haulEnd(plants, "closer" if d < haulJob.d0 * 0.5 else "nograb", d, now)   # flown in, not drifted
 
-func _toExcavator(plants, rock) -> float:
+# Evidence, once per rock and identification stage (unidentified / minerals / value): what the stock filter sees.
+# "COOP: BOT haul(-solo) seen <id> <scene> content=.. composition=.. lidar=.. identified=[minerals, value] wanted=..
+# plant wants=.. min value=.. albedo=..". Read only.
+func _haulSeen(ship, plant, id, n, tag):
+	if not is_instance_valid(n) or not n.is_in_group("pickable") or n.global_position.distance_to(ship.global_position) > 8000.0:
+		return
+	var idf = ship.get("identifiedObjects").get(hash(n))
+	var stage = "none" if idf == null else ("minerals" if not idf[1] else "value")
+	if haulSeen.get(id) == stage:
+		return
+	haulSeen[id] = stage
+	var cfg = plant.get("mineralConfig") if plant.get("mineralConfig") != null else {}
+	Debug.l("COOP: BOT %s seen %s %s content=%s composition=%s lidar=%s identified=%s wanted=%s plant wants=%s min value=%s albedo=%s" % [
+		tag, id, n.filename.get_file(), n.get("mineralContent"), n.get("composition"), n.get("lidarResponse"),
+		"-" if idf == null else str([idf[0], idf[1]]), ship.isValidMineralTarget(n, cfg), cfg.get("minerals", "any"),
+		cfg.get("minValue", 0), cfg.get("albedo", 0)])
+
+# The stock scanForTarget test for a haul target (drone-plant.gd: mass * |desired - v|^2 / dist > minEnergyToTarget,
+# re-checked every scan with no bias for the current target). Read only.
+func _haulCheck(plant, rock) -> float:
+	var dist = plant.global_position.distance_to(rock.global_position)
+	if dist <= 0:
+		return 0.0
+	return rock.mass * (plant.desiredVelicityFor(rock) - rock.linear_velocity).length_squared() / dist
+
+# Solo baseline seeding: break the nearest class-4 field rock next to the ship, as _seedMinerals does for a member
+# (here every rock is local, nothing to claim).
+func _seedSolo(ship, now):
+	if now < seedJob.next:
+		return
+	seedJob.next = now + SEED_EVERY
+	var best = null
+	var bestD = 0.0
+	for n in get_tree().get_nodes_in_group("asteroid"):
+		if not is_instance_valid(n) or n.get("asteroidClass") != 4 or n.get("splitEnergyThreshold") == null \
+				or n.get("fracturing") == true:
+			continue
+		var d = n.global_position.distance_to(ship.global_position)
+		if d < 8000.0 and (best == null or d < bestD):
+			best = n
+			bestD = d
+	if best == null:
+		return
+	var away = (ship.global_position - best.global_position).normalized()
+	ship.global_position = best.global_position + away * SEED_NEAR
+	ship.linear_velocity = best.linear_velocity
+	ship.reset_physics_interpolation()
+	best.totalEnergy = best.splitEnergyThreshold * SEED_ENERGY
+	best.set_physics_process(true)
+	best.set_process(true)
+	Debug.l("COOP: BOT seed solo %s fractured (%.0f px away)" % [best.name, bestD])
+
+# Where the stock drones bring a rock: the plant's gathering spot next to its excavator (drone-plant.gd
+# desiredVelicityFor: toExcavator + haulGatherSpot rotated by the excavator).
+func _toGather(plants, rock) -> float:
 	for p in plants:
 		var x = p.get("excavator")
 		if x != null and is_instance_valid(x):
-			return rock.global_position.distance_to(x.global_position)
+			return rock.global_position.distance_to(x.global_position + p.get("haulGatherSpot").rotated(x.global_rotation))
 	return rock.global_position.distance_to(net.localShip.global_position)
 
 func _haulEnd(plants, result, d, now):
-	Debug.l("COOP: BOT haul trial=%d id=%s result=%s owned=%s d0=%.0f d1=%.0f" % [trial, haulJob.id, result, haulJob.owned,
-		haulJob.d0, d])
+	Debug.l("COOP: BOT %s trial=%d id=%s result=%s owned=%s d0=%.0f d1=%.0f" % ["haul-solo" if haulSolo else "haul", trial,
+		haulJob.id, result, haulJob.owned, haulJob.d0, d])
 	for p in plants:
 		p.enabled = false
 	haulJob = {"state": "idle", "id": "", "until": now + CLAW_GAP + 3.0}   # past the claim's linger
 	if trial >= trials:
-		Debug.l("COOP: BOT haul done, %d trials" % trials)
+		Debug.l("COOP: BOT %s done, %d trials" % ["haul-solo" if haulSolo else "haul", trials])
 
 # What the MPU does to a rock it owns: strip filler (mass drops, the mineral stays), then free it on the disabled
 # layer. Own sees it leave and sends o.eat with what is left.
@@ -677,6 +937,7 @@ func _fracMember(now):
 				frac.skip = {}
 				frac.seen = {}
 				frac.takeable = {}
+				frac.held = {}
 				claw.id = ""
 				claw.result = ""
 				Debug.l("COOP: BOT frac trial=%d id=%s parent %s, reaching for a shard" % [frac.trial, frac.id,
@@ -690,6 +951,8 @@ func _fracMember(now):
 					return
 			if claw.id != "" and (claw.result.begins_with("denied") or rs.nodeOf(claw.id) == null):
 				frac.skip[claw.id] = true
+				if claw.result == "denied:held":
+					frac.held[claw.id] = true   # another claw got it first: one owner, the race this gate is about
 				claw.id = ""
 				claw.result = ""
 			if claw.id == "" and frac.pos != null:
@@ -713,7 +976,8 @@ func _fracMember(now):
 			if shard != null:
 				_aimArm(arm, ship, shard.global_position, shard.linear_velocity)
 			if now > frac.until:
-				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes" % [frac.seen.size(), frac.takeable.size()])
+				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes, %d held by another%s" % [frac.seen.size(),
+					frac.takeable.size(), frac.held.size(), "" if frac.held.empty() else " (" + PoolStringArray(frac.held.keys()).join(" ") + ")"])
 
 # Make mineral rocks the way a player does: break a class-4 rock next to the ship (the ring spawns no minerals). A
 # class-4 rock broken with more than twice its split energy obliterates one class down (asteroid.gd: e = totalEnergy/2
@@ -752,22 +1016,35 @@ func _seedMinerals(ship, now):
 	seedJob.next = now + SEED_EVERY
 	var best = ""
 	var bestD = 0.0
+	var why = {"class4": 0, "owned": 0, "far": 0, "theirs": 0, "blocked": 0}   # evidence when none is found
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.get("asteroidClass") != 4 or n.get("splitEnergyThreshold") == null \
-				or n.get("fracturing") == true or own.owners.has(id):
+				or n.get("fracturing") == true:
 			continue
+		why.class4 += 1
 		var d = n.global_position.distance_to(ship.global_position)
-		if d < 8000.0 and (best == "" or d < bestD):
+		if own.owners.has(id):
+			why.owned += 1
+		elif d >= BOT_REACH:
+			why.far += 1
+		elif spotBlocked.get(id, 0.0) > now:
+			why.blocked += 1
+		elif _theirs(ship, n):
+			why.theirs += 1
+		elif best == "" or d < bestD:
 			best = id
 			bestD = d
 	if best == "":
+		Debug.l("COOP: BOT seed none within %.0f px: tracked=%d %s" % [BOT_REACH, rs.tracked.size(), why])
 		return
 	var rock = rs.nodeOf(best)
-	if bestD > SEED_NEAR * 1.5:
+	if bestD > SEED_NEAR * 1.5 or bestD < SEED_NEAR * 0.75:   # the fracture is obliterating: never from close by
 		var away = (ship.global_position - rock.global_position).normalized()
+		if not _spotClear(ship, rock.global_position + away * SEED_NEAR, best, rock):
+			return
 		ship.global_position = rock.global_position + away * SEED_NEAR
-		ship.linear_velocity = rock.linear_velocity
+		ship.linear_velocity = _shipVel(rock.linear_velocity)
 		ship.reset_physics_interpolation()
 	seedJob.id = best
 	seedJob.until = now + 3.0
@@ -803,6 +1080,17 @@ func _armTakes(arm, ship, n) -> bool:
 		return ship.isValidMineralTarget(n, arm.get("mineralConfig"))
 	return true
 
+# The velocity the bot gives the ship to match a target, capped: stock ship-ctrl.isInEscapeCondition starts the escape
+# to Enceladus (a dive end and a save) when a player ship goes over 2000 px/s for escapeTime, and a fresh shard can be
+# that fast (run 063348: A matched one and flew home). The teleport keeps the ship on the target anyway.
+const SHIP_MAX_V = 1000.0
+# How far the claw and the seeding look for a rock (px). Run 081334: an uncapped pick (a rock identified down to its
+# value anywhere in the tracked set) teleported B 9.4k px. 3000 starved B in run 090013 (no seed, no reach in 7 min);
+# every destination is checked clear anyway (_spotClear).
+const BOT_REACH = 5000.0
+func _shipVel(v: Vector2) -> Vector2:
+	return v.clamped(SHIP_MAX_V)
+
 # Keep the arm's dock area on `at`, moving with the target, until the stock arm locks.
 func _aimArm(arm, ship, at, vel):
 	var area = arm.get("areaDockArea")
@@ -812,7 +1100,7 @@ func _aimArm(arm, ship, at, vel):
 	if off.length() > 20.0:
 		ship.global_position += off
 		ship.reset_physics_interpolation()
-	ship.linear_velocity = vel
+	ship.linear_velocity = _shipVel(vel)
 
 # Protocol race without an arm: claim at the agreed instant (jittered so either side can win), then shards.
 func _fracClaim(now):
@@ -944,7 +1232,8 @@ func _shootTick():
 			if id == "":
 				return
 			trial += 1
-			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME}
+			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME, "claimAt": now + CLAIM_AFTER if shootClaim else -1.0,
+				"claimed": false}
 			# fire the way a player does: the ship zeroes every weapon each frame unless its command input is held
 			pressed = _fireAction(ship, w)
 			if pressed != "":
@@ -956,6 +1245,11 @@ func _shootTick():
 				if pressed != "":
 					Input.action_release(pressed)
 					pressed = ""
+				if shoot.claimed and not shoot.has("let"):
+					Debug.l("COOP: BOT %s trial=%d id=%s claim result=%s, released" % [mode, trial, shoot.id,
+						"owned" if _own().mine.has(shoot.id) else "not-owned"])
+					if rock != null:
+						_own().untouch(rock, "bot")
 				Debug.l("COOP: BOT %s trial=%d id=%s done%s" % [mode, trial, shoot.id, "" if rock != null else " (rock gone)"])
 				shoot = {"state": "idle", "id": "", "until": now + SHOOT_GAP}
 				if trial >= trials:
@@ -967,8 +1261,18 @@ func _shootTick():
 			if off.length() > 10.0:
 				ship.global_position += off
 				ship.reset_physics_interpolation()
-			ship.linear_velocity = rock.linear_velocity
+			ship.linear_velocity = _shipVel(rock.linear_velocity)
 			ship.angular_velocity = 0.0
+			if shoot.claimAt >= 0 and now >= shoot.claimAt and not shoot.claimed:
+				shoot.claimed = true
+				Debug.l("COOP: BOT %s trial=%d id=%s claim%s" % [mode, trial, shoot.id, " (short)" if trial % 2 == 0 else ""])
+				_own().touch(rock, "bot")   # the grant shows up as own.mine; hits already forwarded are still in flight
+			if shoot.claimed and trial % 2 == 0 and not shoot.has("ownedAt") and _own().mine.has(shoot.id):
+				shoot.ownedAt = now
+			if shoot.has("ownedAt") and not shoot.has("let") and now >= shoot.ownedAt + CLAIM_SHORT:
+				shoot.let = true
+				Debug.l("COOP: BOT %s trial=%d id=%s claim result=owned, released early" % [mode, trial, shoot.id])
+				_own().untouch(rock, "bot")
 			w.fire(1.0)   # also directly: the stock laser tick runs before the ship's next reset (seen working in m4-gate5)
 			if now >= holdLogAt:
 				holdLogAt = now + 1.0
@@ -1092,7 +1396,7 @@ func _clawTick():
 				var off = rock.global_position - area.global_position
 				if off.length() > 20.0:
 					ship.global_position += off
-					ship.linear_velocity = rock.linear_velocity
+					ship.linear_velocity = _shipVel(rock.linear_velocity)
 					ship.reset_physics_interpolation()
 			if claw.result != "":
 				if claw.result == "granted":
@@ -1104,6 +1408,8 @@ func _clawTick():
 				_clawEnd(arm, "nolock" if not arm.locked else "nolock:locked-no-answer", now)
 		"hold":
 			if keepLast and trial >= trials and not _own().mine.has(claw.id) and not arm.locked:
+				var r = _rs().nodeOf(claw.id)
+				Debug.l("COOP: BOT claw let go of id=%s: identified=%s takes=%s" % [claw.id, _idStage(ship, r), _armTakes(arm, ship, r)])
 				_clawEnd(arm, "lost", now)   # the arm let go (or ownership was revoked): hold mode tries again
 				return
 			if now >= holdLogAt:
@@ -1111,7 +1417,11 @@ func _clawTick():
 				var rock = _rs().nodeOf(claw.id)
 				if rock != null:
 					var g = CurrentGame.globalCoords(rock.global_position)
-					Debug.l("COOP: BOT claw holding id=%s at %.0f,%.0f locked=%s mine=%s" % [claw.id, g.x, g.y, arm.locked, _own().mine.has(claw.id)])
+					# identified/takes: the salvage arm re-checks its mineral filter every frame, and the lidar identifies a
+					# fresh shard a few seconds into the hold; an unwanted one is then dropped ("Switching [..] from invalid
+					# target"). Only a hold with identified=value takes=True is final (gate_arm stages on that).
+					Debug.l("COOP: BOT claw holding id=%s at %.0f,%.0f locked=%s mine=%s identified=%s takes=%s" % [claw.id, g.x, g.y,
+						arm.locked, _own().mine.has(claw.id), _idStage(ship, rock), _armTakes(arm, ship, rock)])
 			if now >= claw.until and not (keepLast and trial >= trials):
 				_clawEnd(arm, "", now)
 
@@ -1128,20 +1438,40 @@ func _clawEnd(arm, result, now):
 	if trial >= trials:
 		Debug.l("COOP: BOT claw done, %d trials" % trials)
 
+# How far the ship's lidar has identified a rock: none, minerals (value 0) or value (hud/MineralMark).
+func _idStage(ship, n) -> String:
+	if ship == null or n == null or not is_instance_valid(n):
+		return "gone"
+	var idf = ship.get("identifiedObjects").get(hash(n))
+	return "none" if idf == null else ("minerals" if not idf[1] else "value")
+
 func _pickClawRock(ship) -> String:
 	var rs = _rs()
 	var arm = _arm()
 	var best = ""
 	var bestD = 0.0
+	var bestFinal = false
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) \
-				or skipIds.has(id) or not _armTakes(arm, ship, n):
+				or skipIds.has(id) or not _armTakes(arm, ship, n) or n.linear_velocity.length() > SHIP_MAX_V:
+			continue
+		# hold mode: a rock identified down to its value keeps passing the arm's filter; prefer those
+		var isFinal = keepLast and _idStage(ship, n) == "value"
+		if bestFinal and not isFinal:
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if best == "" or d < bestD:
+		if d > BOT_REACH or spotBlocked.get(id, 0.0) > _secs() or _theirs(ship, n):
+			continue
+		if best == "" or d < bestD or (isFinal and not bestFinal):
 			best = id
 			bestD = d
+			bestFinal = isFinal
+	var area = arm.get("areaDockArea") if arm != null else null
+	if best != "" and area != null:
+		var rock = rs.nodeOf(best)
+		if not _spotClear(ship, ship.global_position + rock.global_position - area.global_position, best, rock):
+			return ""
 	return best
 
 func _onGranted(id):
