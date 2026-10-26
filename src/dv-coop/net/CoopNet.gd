@@ -19,6 +19,7 @@ extends Node
 #   --coop-slot=savegame-b.dv   dev: use another save slot
 #   +connect_lobby <id>         Steam's own: a friend's invite accepted with the game closed (goes through requestJoin)
 #   --coop-dev-enet=<host:port> dev (M5): the co-op panel's Host and Join use this ENet relay instead of Steam
+#   --coop-dev-name=<name>      dev: my name on the ENet transport (dev5 names its instances A, B, C)
 #
 # M5 session API, driven by the co-op panel (ui/CoopPanel.gd): host(), join(lobby), leave(), requestJoin(lobby, from)
 # for every outside join request, answerJoin(yes). A lobby is a Steam lobby id (int) or, on the ENet dev transport, a
@@ -74,6 +75,7 @@ var retryN = 0
 var holdUntil = 0.0       # dev drop: no reconnect before this
 var pendingJoin = null    # {lobby, from, shown}: an outside join request waiting for the player
 var connectLobby = ""     # +connect_lobby from the launch options
+var devName = ""
 const RETRY_STEPS = [1.0, 2.0, 4.0, 8.0, 15.0]
 
 # peers: id -> {name, beacon, beaconAt, cfg, puppet, inRange}
@@ -114,6 +116,8 @@ func _ready():
 			connectLobby = args[i + 1]
 		elif arg.begins_with("--coop-dev-enet="):
 			devEnet = arg.substr(16)
+		elif arg.begins_with("--coop-dev-name="):
+			devName = arg.substr(16)
 		elif arg == "--coop-host":
 			wantHost = true
 		elif arg == "--coop-invite":
@@ -478,6 +482,8 @@ func _onEnetServerGone():
 func _myName():
 	if transport == Transport.STEAM:
 		return Steam.getPersonaName()
+	if devName != "":
+		return devName
 	var user = OS.get_environment("USERNAME")
 	if user == "":
 		user = OS.get_environment("USER")

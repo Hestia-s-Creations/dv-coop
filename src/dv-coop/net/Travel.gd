@@ -23,7 +23,9 @@ extends Node
 #      --coop-dev-invite=<scene>:<s>,<lobby>  (repeatable) a join request for <lobby> (ENet: host:port) arriving s
 #                              seconds into that scene, as a Steam join_requested would
 #      --coop-dev-answer=<yes|no>[,...]  answer the join requests in turn, 3 s after each is shown
-#      --coop-dev-dive-friend=<s>  at Enceladus: open the dive picker, pick the first friend, press Dive
+#      --coop-dev-dive-friend=<s>[,<name>]  at Enceladus: open the dive picker, pick that friend (else the first), Dive
+#      --coop-dev-solo-pause=<s>,<s2>  in a dive: pause as stock (the menu), and close it s2 seconds into the dive; a
+#                              friend arriving in between turns it into the cell-style menu (gate 8)
 #      --coop-dev-plot-friend=<s>  in a dive: plot a course to the first friend with the stock autopilot burn
 #      --coop-dev-drop=<s>,<d>     in a dive: cut the link for d seconds without a bye, then reconnect
 
@@ -50,6 +52,9 @@ var answers = []
 var answerAt = -1.0
 var diveFriendAfter = -1.0
 var diveFriendStep = 0
+var diveFriendName = ""
+var soloPauseAt = -1.0
+var soloResumeAt = -1.0
 var plotFriendAfter = -1.0
 var dropAt = -1.0
 var dropFor = 0.0
@@ -71,7 +76,13 @@ func _ready():
 		elif arg.begins_with("--coop-dev-answer="):
 			answers = Array(arg.substr(18).split(","))
 		elif arg.begins_with("--coop-dev-dive-friend="):
-			diveFriendAfter = float(arg.substr(23))
+			var df = arg.substr(23).split(",")
+			diveFriendAfter = float(df[0])
+			diveFriendName = df[1] if df.size() > 1 else ""
+		elif arg.begins_with("--coop-dev-solo-pause="):
+			var sp = arg.substr(22).split(",")
+			soloPauseAt = float(sp[0])
+			soloResumeAt = float(sp[1]) if sp.size() > 1 else soloPauseAt + 60.0
 		elif arg.begins_with("--coop-dev-plot-friend="):
 			plotFriendAfter = float(arg.substr(23))
 		elif arg.begins_with("--coop-dev-drop="):
@@ -282,6 +293,14 @@ func _devTick(delta):
 			var ship = CurrentGame.getPlayerShip()
 			ship.astrogationVelocityMatch = true   # the stock autopilot flies the burn
 			plotToFriend(fs[0].id)
+	if soloPauseAt >= 0 and sceneKind == "dive" and sceneClock >= soloPauseAt:
+		soloPauseAt = -1.0
+		_log("dev: pausing as the stock pause does (focus loss), alone")
+		CurrentGame.emit_signal("pauseGame", true)
+	if soloResumeAt >= 0 and soloPauseAt < 0 and sceneKind == "dive" and sceneClock >= soloResumeAt:
+		soloResumeAt = -1.0
+		_log("dev: closing the pause menu; tree paused=%s" % get_tree().paused)
+		CurrentGame.emit_signal("pauseGame", false)
 	if dropAt >= 0 and sceneKind == "dive" and sceneClock >= dropAt:
 		dropAt = -1.0
 		_log("dev: dropping the link for %.0f s" % dropFor)
@@ -327,7 +346,7 @@ func _diveFriendStep():
 			var l = list[0]
 			var idx = -1
 			for i in range(l.destinationLut.size()):
-				if typeof(friendOf(l.destinationLut[i])) != TYPE_NIL:
+				if typeof(friendOf(l.destinationLut[i])) != TYPE_NIL and (diveFriendName == "" or l.get_item_text(i).begins_with(diveFriendName + " ")):
 					idx = i
 					break
 			if idx < 0:

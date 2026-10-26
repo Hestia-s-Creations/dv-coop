@@ -34,12 +34,12 @@ SR=tools/setres.py
 
 dv_launch "$R" --enable-mods --coop-enet-host=7777
 sleep 6
-dv_launch "$A" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$DIVE_Y $EXTRA_A
+dv_launch "$A" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$DIVE_Y --coop-dev-name=A $EXTRA_A
 sleep 6
-dv_launch "$B" --enable-mods --coop-dev-enet=127.0.0.1:7777 $EXTRA_B
+dv_launch "$B" --enable-mods --coop-dev-enet=127.0.0.1:7777 --coop-dev-name=B $EXTRA_B
 if [ -n "$C" ]; then
   sleep 6
-  dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_C)) --coop-slot=savegame.dv $EXTRA_C
+  dv_launch "$C" --enable-mods --coop-enet-join=127.0.0.1:7777 --coop-autodive --coop-dive-offset=$DIVE_X,$((DIVE_Y + OFF_C)) --coop-slot=savegame.dv --coop-dev-name=C $EXTRA_C
 fi
 echo "launched R (relay), A (in the ring), B (title)${C:+, C (+$OFF_C)}. logs:"
 echo "  A: ${A:-$DV_DATA}/dV/logs/dv_log_*.txt"

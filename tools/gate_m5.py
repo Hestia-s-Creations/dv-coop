@@ -154,7 +154,28 @@ def gate6(logs):
     return ok, ev
 
 
-GATES = {1: gate1, 2: gate2, 3: gate3, 4: gate4, 5: gate5, 6: gate6}
+def gate8(logs):
+    """Paused alone, then a friend arrives: the stock pause turns into the cell-style menu (game running, menu up), the
+    cell forms, and the menu still closes"""
+    ev, ok = [], True
+    staged = [(i, l) for i in logs for l in i.lines if "COOP: TRAVEL dev: pausing as the stock pause does" in l]
+    if not staged:
+        return False, ["FAIL: not staged (use --coop-dev-solo-pause=<s>,<s2> on C and dive B to C)"]
+    for i, l in staged:
+        t = _secs(l)
+        resumed = i.after(r"COOP: SHIPS pause menu open in a cell, game resumed", t, 300)
+        tr = _secs(resumed[0]) if resumed else t
+        cell = i.after(r"COOP: CELL (JOINED|FORMED|PROMOTED)", tr, 60) if resumed else []
+        closing = i.after(r"COOP: TRAVEL dev: closing the pause menu", t, 400)
+        closed = i.after(r"COOP: SHIPS pause menu closed in a cell", _secs(closing[0]), 5) if closing else []
+        good = bool(resumed) and bool(cell) and bool(closed)
+        ok = ok and good
+        ev.append("%s: paused at %s; resumed on arrival: %s; cell: %s; menu closed: %s" % (
+            i.name(), l.split("]")[0][-8:], resumed[0].split("]")[0][-8:] if resumed else "NO", bool(cell), bool(closed)))
+    return ok, ev
+
+
+GATES = {1: gate1, 2: gate2, 3: gate3, 4: gate4, 5: gate5, 6: gate6, 8: gate8}
 
 
 def main(argv):

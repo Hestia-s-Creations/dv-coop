@@ -36,11 +36,27 @@ func coopOpen():
 func coopAsk():
 	coopOpen()
 
+# In a cell, or about to be: a friend's ship is in puppet range. Either way pausing would freeze them too (or keep
+# their cell from forming with us), so the menu opens without pausing.
 func _coopInCell() -> bool:
 	if not ModLoader.has_meta("dvcoop"):
 		return false
-	var cell = ModLoader.get_meta("dvcoop").get_node_or_null("Cell")
-	return cell != null and cell.inCell()
+	var net = ModLoader.get_meta("dvcoop")
+	var cell = net.get_node_or_null("Cell")
+	if cell != null and cell.inCell():
+		return true
+	for id in net.peers:
+		if net.peers[id].get("inRange", false):
+			return true
+	return false
+
+# A player paused alone (stock pause: key, focus loss, overlay) and a friend arrives or a cell forms: the stock pause
+# becomes the cell-style menu. The game runs again, the menu stays up and closes as usual (Resume, pause key).
+func _process(_delta):
+	if get_tree().paused and $PauseContainer.visible and _coopInCell():
+		get_tree().paused = false
+		Engine.set_meta("dvcoop_menu", true)
+		Debug.l("COOP: SHIPS pause menu open in a cell, game resumed (a friend arrived while paused)")
 
 func pauseGame(pause):
 	if not pause and coopPanel != null:
