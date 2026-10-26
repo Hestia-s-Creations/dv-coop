@@ -13,8 +13,24 @@ const Compat = preload("res://dv-coop/Compat.gd")   # the game build pin (Compat
 const EXTENSIONS = [
 	"res://dv-coop/ext/asteroid.gd",
 	"res://dv-coop/ext/AsteroidSpawner.gd",
+	"res://dv-coop/ext/DockingArm.gd",
+	"res://dv-coop/ext/MineralProcessingUnit.gd",
+	"res://dv-coop/ext/thruster.gd",
 	"res://dv-coop/ext/ship-ctrl.gd",
+	"res://dv-coop/ext/laser.gd",
+	"res://dv-coop/ext/emp.gd",
+	"res://dv-coop/ext/synchrotron.gd",
+	"res://dv-coop/ext/drone-plant.gd",
+	"res://dv-coop/ext/PDT.gd",
+	"res://dv-coop/ext/Reactor.gd",
+	"res://dv-coop/ext/FusionReactor.gd",
 	"res://dv-coop/ext/CurrentGame.gd",
+	"res://dv-coop/ext/BulletTimer.gd",
+	"res://dv-coop/ext/PauseLayer.gd",
+	"res://dv-coop/ext/TitleMenu.gd",
+	"res://dv-coop/ext/AstrogatorPanel.gd",
+	"res://dv-coop/ext/AstrogationDestinations.gd",
+	"res://dv-coop/ext/DiveTarget.gd",
 ]
 
 var modLoader = null

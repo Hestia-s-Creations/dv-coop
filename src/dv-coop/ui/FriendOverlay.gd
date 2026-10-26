@@ -13,6 +13,7 @@ extends CanvasLayer
 # Dev: --coop-dev-zoomout holds the camera at its zoom-out limit (resolution checks at max view).
 #      --coop-dev-jitter logs how far tracked rocks stray from a straight line over 1 s, in screen pixels,
 #      split at RockSync's 10 Hz / 2 Hz tier boundary (6,000 px).
+#      --coop-dev-view logs the area the view covers and where the friend markers went, every 5 s.
 
 var net = null
 var ctl = null
@@ -32,6 +33,7 @@ var hudAccum = HUD_EVERY
 var placed = []
 var devZoomOut = false
 var devJitter = false
+var devView = false
 var jit = {}           # rock node id -> [Vector2 ...] last JIT_N physics positions
 const JIT_N = 60
 const JIT_NEAR = 6000.0
@@ -45,8 +47,11 @@ func _ready():
 	ctl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(ctl)
 	ctl.connect("draw", self, "_onDraw")
+	# coop:dev{
 	devZoomOut = "--coop-dev-zoomout" in OS.get_cmdline_args()
 	devJitter = "--coop-dev-jitter" in OS.get_cmdline_args()
+	devView = "--coop-dev-view" in OS.get_cmdline_args()
+	# coop:dev}
 	set_physics_process(devJitter)
 	font = DynamicFont.new()
 	font.font_data = load("res://hud/NotoMono-Regular.ttf")
@@ -73,12 +78,15 @@ func _process(delta):
 		_scanHud()
 	if ctl != null:
 		ctl.update()
+	# coop:dev{
 	diagAccum += delta
 	if diagAccum >= 5.0:
 		diagAccum = 0.0
-		_logView()
+		if devView:
+			_logView()
 		if devJitter:
 			_logJitter()
+	# coop:dev}
 
 func _physics_process(delta):
 	var rs = net.get_node_or_null("RockSync") if net != null else null
@@ -153,7 +161,12 @@ func _logView():
 	var view = inv.basis_xform(size).abs()
 	var cam = CurrentGame.getCurrentCamera()
 	var zoom = cam.zoom.x if cam != null else -1.0
-	Debug.l("COOP: OVERLAY window=%s canvas=%s ui=%s pd=%s zoom=%.2f view=%dx%d far=%d px hud=%d" % [OS.window_size, size, Settings.cfg.ui.scale, Settings.cfg.display.pixelDoubling, zoom, view.x, view.y, far, hudRects.size()])
+	var overlap = 0
+	for i in placed.size():
+		for j in range(i + 1, placed.size()):
+			if placed[i].intersects(placed[j]):
+				overlap += 1
+	Debug.l("COOP: OVERLAY window=%s canvas=%s ui=%s pd=%s zoom=%.2f view=%dx%d far=%d px hud=%d labels=%d overlap=%d" % [OS.window_size, size, Settings.cfg.ui.scale, Settings.cfg.display.pixelDoubling, zoom, view.x, view.y, far, hudRects.size(), placed.size(), overlap])
 
 # The ship displays build their panels from PanelContainers on CanvasLayers; collect the visible ones.
 func _scanHud():
@@ -223,7 +236,7 @@ func _onDraw():
 			listed.append(["%s: no signal" % pr.name, COLOR_DIM])
 			continue
 		if b.get("zone") != "rings" or not b.has("p") or not haveShip:
-			var where = "at Enceladus" if b.get("zone") == "station" else "in menu"
+			var where = {"station": "at Enceladus", "rings": "in the rings"}.get(b.get("zone"), "in menu")
 			listed.append(["%s: %s" % [pr.name, where], COLOR_DIM])
 			continue
 		var myGlobal = CurrentGame.globalCoords(ship.global_position)
@@ -243,6 +256,18 @@ func _onDraw():
 			if _hitsHud(rect) or rect.end.x > size.x:
 				textPos = screen + Vector2(- RING - 4 - w, asc / 2)
 				rect.position = textPos - Vector2(0, asc)
+			# friends flying together: step the label down (up near the bottom) off the ones already placed, with a
+			# leader line back to its ring
+			var push = Vector2(0, lh) if screen.y < center.y else Vector2(0, - lh)
+			var tries = 0
+			while _collides(rect) and tries < 8:
+				textPos += push
+				rect.position += push
+				tries += 1
+			if tries > 0:
+				var lx = rect.position.x if rect.position.x > screen.x else rect.end.x
+				ctl.draw_line(screen + (Vector2(lx, rect.position.y + lh / 2) - screen).normalized() * RING,
+					Vector2(lx, rect.position.y + lh / 2), Color(col.r, col.g, col.b, 0.5), 1.0)
 			placed.append(rect)
 			ctl.draw_string(font, textPos, label, col)
 			continue

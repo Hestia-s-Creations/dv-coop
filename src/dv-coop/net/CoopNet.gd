@@ -17,6 +17,13 @@ extends Node
 #   --coop-autodive             dev: skip the menus, load the save, dive at DEV_DIVE_TARGET
 #   --coop-dive-offset=x,y      dev: offset the auto-dive target (px) so instances start apart
 #   --coop-slot=savegame-b.dv   dev: use another save slot
+#   +connect_lobby <id>         Steam's own: a friend's invite accepted with the game closed (goes through requestJoin)
+#   --coop-dev-enet=<host:port> dev (M5): the co-op panel's Host and Join use this ENet relay instead of Steam
+#   --coop-dev-name=<name>      dev: my name on the ENet transport (dev5 names its instances A, B, C)
+#
+# M5 session API, driven by the co-op panel (ui/CoopPanel.gd): host(), join(lobby), leave(), requestJoin(lobby, from)
+# for every outside join request, answerJoin(yes). A lobby is a Steam lobby id (int) or, on the ENet dev transport, a
+# "host:port" string. A drop without leave() reconnects to the same lobby with backoff (1, 2, 4, 8 s, then 15 s).
 
 const CHANNEL = 0
 const P2P_UNRELIABLE = 0
@@ -27,14 +34,20 @@ const PING_EVERY = 1.0
 const BEACON_HZ = 1.0
 const INTENT_HZ = 30.0
 const STATE_HZ = 20.0
+# Wire protocol version: bump on any incompatible packet change. hello carries it with the mod version and game
+# build, and peers that differ are turned away (review R10).
+const PROTO = 1
 const RANGE_PUPPET = 40000.0
 const RANGE_PUPPET_DROP = 45000.0
 const BEACON_TIMEOUT = 6.0
 const GAME_SCENE = "res://Game.tscn"
 const DEV_DIVE_TARGET = Vector2(15000, 12345678)
-const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd"]
+# Child modules, in order. Missing files are skipped, so a module can land on its own branch first.
+const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd", "res://dv-coop/net/Own.gd", "res://dv-coop/net/Npc.gd", "res://dv-coop/net/Travel.gd", "res://dv-coop/net/DevBot.gd"]
 
 enum Transport { NONE, STEAM, ENET }
+
+signal session_changed
 
 var transport = Transport.NONE
 var isHost = false
@@ -50,6 +63,20 @@ var steamReady = false
 var myId = 0            # Steam id, or ENet unique id
 var lobbyId = 0
 var enet = null
+
+# --- session (M5)
+var devEnet = ""          # --coop-dev-enet: Host / Join go to this ENet relay
+var steamHooked = false
+var wantLobby = null      # the lobby we are in or on our way to; null = none. -1: a Steam lobby we are creating
+var wantRole = ""         # "host" | "join"
+var state = "idle"        # idle, hosting, joining, in lobby, reconnecting
+var retryAt = -1.0
+var retryN = 0
+var holdUntil = 0.0       # dev drop: no reconnect before this
+var pendingJoin = null    # {lobby, from, shown}: an outside join request waiting for the player
+var connectLobby = ""     # +connect_lobby from the launch options
+var devName = ""
+const RETRY_STEPS = [1.0, 2.0, 4.0, 8.0, 15.0]
 
 # peers: id -> {name, beacon, beaconAt, cfg, puppet, inRange}
 var peers = {}
@@ -72,13 +99,27 @@ var statsAccum = 0.0
 # --- modules (M3+): packet type -> [object, method], called as method(from, msg) on the physics tick
 var handlers = {}
 
+# peers turned away by the hello check: id -> "name: why", for the friend list (review R10)
+var incompatible = {}
+var heardFrom = {}         # id -> s (ticks) of its last packet of any kind: Cell's authority-silence check (K1)
+
 func _ready():
 	for path in MODULES:
+		if not ResourceLoader.exists(path):
+			continue
 		var m = load(path).new()
 		m.net = self
 		add_child(m)
-	for arg in OS.get_cmdline_args():
-		if arg == "--coop-host":
+	var args = OS.get_cmdline_args()
+	for i in range(args.size()):
+		var arg = args[i]
+		if arg == "+connect_lobby" and i + 1 < args.size():
+			connectLobby = args[i + 1]
+		elif arg.begins_with("--coop-dev-enet="):
+			devEnet = arg.substr(16)
+		elif arg.begins_with("--coop-dev-name="):
+			devName = arg.substr(16)
+		elif arg == "--coop-host":
 			wantHost = true
 		elif arg == "--coop-invite":
 			wantInvite = true
@@ -99,15 +140,18 @@ func _ready():
 
 	ModLoader.set_meta("dvcoop", self)
 
-	if enetHostPort > 0 or enetJoin != "":
+	if enetHostPort > 0:
 		_startEnet()
-	elif wantHost or joinLobbyId != 0:
-		transport = Transport.STEAM
-		Debug.l("COOP: waiting for Steam (host=%s join=%s)" % [wantHost, joinLobbyId])
+	elif enetJoin != "":
+		join(enetJoin)
+	elif wantHost:
+		host()
+	elif joinLobbyId != 0:
+		join(joinLobbyId)
 	else:
-		Debug.l("COOP: no session requested, CoopNet idle")
-		set_process(false)
-		set_physics_process(false)
+		Debug.l("COOP: no session requested, CoopNet idle (co-op panel: host / join)")
+	if connectLobby != "":
+		call_deferred("requestJoin", lobbyKey(connectLobby), "Steam invite")
 
 func _exit_tree():
 	# Tell everyone we're going, so cells hand over at once instead of waiting out the heartbeat.
@@ -115,24 +159,31 @@ func _exit_tree():
 		_broadcast({"t": "bye"}, true)
 		if enet != null:
 			enet.poll()
+	if transport == Transport.STEAM and lobbyId != 0:
+		Steam.leaveLobby(lobbyId)
 	if ModLoader.has_meta("dvcoop"):
 		ModLoader.remove_meta("dvcoop")
 
 # ---------------------------------------------------------------- Steam
 
+var steamMissingLogged = false
+
 func _process(delta):
-	if transport == Transport.STEAM and not steamReady:
-		if not Engine.has_singleton("Steam"):
+	if not steamHooked:
+		if Engine.has_singleton("Steam"):
+			if Steam.loggedOn():
+				_onSteamReady()
+		elif transport == Transport.STEAM and not steamMissingLogged:
+			steamMissingLogged = true
 			Debug.l("COOP: Steam singleton missing, cannot use Steam transport")
-			set_process(false)
-			return
-		if Steam.loggedOn():
-			_onSteamReady()
+	_retryTick()
 
 func _onSteamReady():
+	steamHooked = true
 	steamReady = true
-	myId = Steam.getSteamID()
-	Debug.l("COOP: Steam ready, I am %d (%s)" % [myId, Steam.getPersonaName()])
+	if transport != Transport.ENET:
+		myId = Steam.getSteamID()
+	Debug.l("COOP: Steam ready, I am %d (%s)" % [Steam.getSteamID(), Steam.getPersonaName()])
 	Steam.connect("lobby_created", self, "_onLobbyCreated")
 	Steam.connect("lobby_joined", self, "_onLobbyJoined")
 	Steam.connect("lobby_chat_update", self, "_onLobbyChatUpdate")
@@ -140,31 +191,45 @@ func _onSteamReady():
 	Steam.connect("p2p_session_connect_fail", self, "_onP2PConnectFail")
 	Steam.connect("join_requested", self, "_onJoinRequested")
 	Steam.allowP2PPacketRelay(true)
-	if wantHost:
+	if transport == Transport.STEAM:
+		_steamGo()
+
+# Start what host() / join() asked for, once Steam is up.
+func _steamGo():
+	if wantRole == "host" and typeof(wantLobby) == TYPE_INT and wantLobby == -1:
 		isHost = true
 		Debug.l("COOP: creating lobby")
 		Steam.createLobby(LOBBY_FRIENDS_ONLY, LOBBY_MAX)
-	elif joinLobbyId != 0:
-		Debug.l("COOP: joining lobby %d" % joinLobbyId)
-		Steam.joinLobby(joinLobbyId)
+	elif typeof(wantLobby) == TYPE_INT and wantLobby > 0:
+		Debug.l("COOP: joining lobby %d" % wantLobby)
+		Steam.joinLobby(wantLobby)
 
 func _onLobbyCreated(result, lobby):
 	Debug.l("COOP: lobby_created result=%s lobby=%d" % [result, lobby])
 	if result != 1:
 		return
 	lobbyId = lobby
+	wantLobby = lobby
 	Steam.setLobbyData(lobbyId, "dvcoop", "1")
 	Steam.setLobbyData(lobbyId, "build", str(CurrentGame.get("version")))
 	Steam.setLobbyJoinable(lobbyId, true)
 	Debug.l("COOP: LOBBY ID %d  (others run: --enable-mods --coop-join=%d)" % [lobbyId, lobbyId])
+	_steamPresence()
+	_inLobby()
 	if wantInvite:
 		Steam.activateGameOverlayInviteDialog(lobbyId)
 
 func _onLobbyJoined(lobby, permissions, locked, response):
 	Debug.l("COOP: lobby_joined lobby=%d response=%s" % [lobby, response])
 	if response != 1:
+		if retryAt < 0:
+			Debug.l("COOP: SESSION join of lobby %d failed (response %s)" % [lobby, response])
+			_reset()
 		return
 	lobbyId = lobby
+	wantLobby = lobby
+	_steamPresence()
+	_inLobby()
 	isHost = (Steam.getLobbyOwner(lobbyId) == myId)
 	var n = Steam.getNumLobbyMembers(lobbyId)
 	for i in range(n):
@@ -185,15 +250,171 @@ func _onLobbyChatUpdate(lobby, changedId, makingChangeId, chatState):
 		Steam.closeP2PSessionWithUser(changedId)
 
 func _onP2PSessionRequest(remoteId):
-	Debug.l("COOP: p2p_session_request from %d" % remoteId)
-	Steam.acceptP2PSessionWithUser(remoteId)
+	# only players in our lobby may open a session with us
+	var member = false
+	if lobbyId != 0:
+		for i in range(Steam.getNumLobbyMembers(lobbyId)):
+			if Steam.getLobbyMemberByIndex(lobbyId, i) == remoteId:
+				member = true
+	Debug.l("COOP: p2p_session_request from %d (%s)" % [remoteId, "lobby member, accepted" if member else "not in our lobby, ignored"])
+	if member:
+		Steam.acceptP2PSessionWithUser(remoteId)
 
 func _onP2PConnectFail(steamId, sessionError):
 	Debug.l("COOP: p2p_session_connect_fail %d err=%s" % [steamId, sessionError])
 
 func _onJoinRequested(lobby, friendId):
 	Debug.l("COOP: join_requested lobby=%d from=%d" % [lobby, friendId])
-	Steam.joinLobby(lobby)
+	requestJoin(lobby, Steam.getFriendPersonaName(friendId))
+
+func _steamPresence():
+	Steam.setRichPresence("connect", "+connect_lobby %d" % lobbyId)
+	Steam.setRichPresence("status", "dV co-op")
+
+# ---------------------------------------------------------------- session (M5)
+
+func lobbyKey(s):
+	# a Steam lobby id, or "host:port" on the ENet dev transport
+	return s if ":" in str(s) else int(s)
+
+# Lobbies are ints or strings, and Godot 3 errors on == between the two.
+func sameLobby(a, b) -> bool:
+	return typeof(a) == typeof(b) and a == b
+
+func inLobby() -> bool:
+	return state == "in lobby"
+
+func host():
+	leave()
+	wantRole = "host"
+	if devEnet != "":
+		wantLobby = devEnet
+		_enetConnect(devEnet)
+	else:
+		transport = Transport.STEAM
+		wantLobby = -1
+		if steamReady:
+			_steamGo()
+	_setState("hosting")
+
+func join(lobby):
+	leave()
+	wantRole = "join"
+	wantLobby = lobby
+	if typeof(lobby) == TYPE_STRING:
+		_enetConnect(lobby)
+	else:
+		transport = Transport.STEAM
+		if steamReady:
+			_steamGo()
+	_setState("joining")
+
+func leave():
+	if transport == Transport.NONE and typeof(wantLobby) == TYPE_NIL:
+		return
+	Debug.l("COOP: SESSION leaving lobby %s" % [wantLobby])
+	if peers.size() > 0:
+		_broadcast({"t": "bye"}, true)
+		if enet != null:
+			enet.poll()
+	_dropLink()
+	_reset()
+
+# An outside request to join a lobby: Steam's join_requested, +connect_lobby, a friend row's Join. Nothing happens
+# until the player answers: the co-op panel shows the question where the player is (net/Travel.gd decides when).
+func requestJoin(lobby, from):
+	if sameLobby(lobby, wantLobby) and inLobby():
+		Debug.l("COOP: SESSION join request for lobby %s: already in it" % [lobby])
+		return
+	pendingJoin = {"lobby": lobby, "from": str(from), "shown": false}
+	Debug.l("COOP: SESSION join request for lobby %s from %s" % [lobby, from])
+	emit_signal("session_changed")
+
+func answerJoin(yes: bool):
+	if typeof(pendingJoin) == TYPE_NIL:
+		return
+	var lobby = pendingJoin.lobby
+	Debug.l("COOP: SESSION join request for lobby %s answered %s" % [lobby, "yes" if yes else "no"])
+	pendingJoin = null
+	if yes:
+		join(lobby)
+	else:
+		emit_signal("session_changed")
+
+func _setState(s):
+	if state == s:
+		return
+	state = s
+	Debug.l("COOP: SESSION %s (lobby %s)" % [s, wantLobby])
+	emit_signal("session_changed")
+
+func _inLobby():
+	if retryAt >= 0:
+		Debug.l("COOP: SESSION reconnected to lobby %s after %d attempt(s)" % [wantLobby, retryN])
+	retryAt = -1.0
+	retryN = 0
+	_setState("in lobby")
+
+func _reset():
+	transport = Transport.NONE
+	isHost = false
+	lobbyId = 0
+	wantLobby = null
+	wantRole = ""
+	retryAt = -1.0
+	retryN = 0
+	_setState("idle")
+
+# Close the transport link without forgetting the lobby.
+func _dropLink():
+	for id in peers.keys():
+		_peerGone(id)
+	if enet != null:
+		enet.close_connection()
+		enet = null
+	if transport == Transport.STEAM and lobbyId != 0:
+		Steam.leaveLobby(lobbyId)
+		Steam.clearRichPresence()
+		lobbyId = 0
+
+func _transportLost(why):
+	if typeof(wantLobby) == TYPE_NIL:
+		return
+	Debug.l("COOP: SESSION link to lobby %s lost (%s), reconnecting" % [wantLobby, why])
+	_dropLink()
+	retryN = 0
+	retryAt = max(_now() + RETRY_STEPS[0], holdUntil)
+	_setState("reconnecting")
+
+# dev: cut the link for `secs` without a bye, as a pulled cable would, then let the reconnect loop bring it back
+func devDrop(secs: float):
+	holdUntil = _now() + secs
+	_transportLost("dev drop for %.0f s" % secs)
+
+func _retryTick():
+	if retryAt < 0 or _now() < retryAt:
+		return
+	retryN += 1
+	retryAt = _now() + RETRY_STEPS[min(retryN, RETRY_STEPS.size() - 1)]
+	Debug.l("COOP: SESSION reconnect attempt %d to lobby %s" % [retryN, wantLobby])
+	if typeof(wantLobby) == TYPE_STRING:
+		_enetConnect(wantLobby)
+	elif steamReady and typeof(wantLobby) == TYPE_INT and wantLobby > 0:
+		Steam.joinLobby(wantLobby)
+
+func _now():
+	return OS.get_ticks_msec() / 1000.0
+
+# Steam has no "you dropped" event for us: if every peer that was beaconing has gone quiet while the lobby still
+# lists them, our link is gone.
+func _steamWatch():
+	if transport != Transport.STEAM or lobbyId == 0 or retryAt >= 0 or peers.size() == 0:
+		return
+	var now = _now()
+	for id in peers:
+		if peers[id].beaconAt <= 0.0 or now - peers[id].beaconAt < 2 * BEACON_TIMEOUT:
+			return
+	_transportLost("every peer silent for %.0f s" % (2 * BEACON_TIMEOUT))
 
 # ---------------------------------------------------------------- ENet (dev star, server relays)
 
@@ -201,21 +422,30 @@ func _startEnet():
 	transport = Transport.ENET
 	enet = NetworkedMultiplayerENet.new()
 	var err
-	if enetHostPort > 0:
-		isHost = true
-		err = enet.create_server(enetHostPort, LOBBY_MAX - 1)
-		Debug.l("COOP: ENet server on %d -> %s" % [enetHostPort, err])
-	else:
-		var parts = enetJoin.split(":")
-		var host = parts[0]
-		var port = int(parts[1]) if parts.size() > 1 else 7777
-		err = enet.create_client(host, port)
-		Debug.l("COOP: ENet client to %s:%d -> %s" % [host, port, err])
+	isHost = true
+	err = enet.create_server(enetHostPort, LOBBY_MAX - 1)
+	Debug.l("COOP: ENet server on %d -> %s" % [enetHostPort, err])
 	myId = enet.get_unique_id()
 	enet.connect("peer_connected", self, "_onEnetPeer")
 	enet.connect("peer_disconnected", self, "_onEnetPeerGone")
 	enet.connect("connection_succeeded", self, "_onEnetConnected")
 	enet.connect("connection_failed", self, "_onEnetFailed")
+
+func _enetConnect(addr: String):
+	transport = Transport.ENET
+	if enet != null:
+		enet.close_connection()
+	enet = NetworkedMultiplayerENet.new()
+	var parts = addr.split(":")
+	var port = int(parts[1]) if parts.size() > 1 else 7777
+	var err = enet.create_client(parts[0], port)
+	Debug.l("COOP: ENet client to %s:%d -> %s" % [parts[0], port, err])
+	myId = enet.get_unique_id()
+	enet.connect("peer_connected", self, "_onEnetPeer")
+	enet.connect("peer_disconnected", self, "_onEnetPeerGone")
+	enet.connect("connection_succeeded", self, "_onEnetConnected")
+	enet.connect("connection_failed", self, "_onEnetFailed")
+	enet.connect("server_disconnected", self, "_onEnetServerGone")
 
 func _onEnetPeer(id):
 	Debug.l("COOP: ENet peer %d connected" % id)
@@ -237,16 +467,28 @@ func _onEnetPeerGone(id):
 func _onEnetConnected():
 	myId = enet.get_unique_id()
 	Debug.l("COOP: ENet connected to server, I am %d" % myId)
+	_inLobby()
 
 func _onEnetFailed():
 	Debug.l("COOP: ENet connection failed")
+	# deferred: these arrive from inside enet.poll(), and _transportLost closes that connection
+	if retryAt < 0 and typeof(wantLobby) != TYPE_NIL:
+		call_deferred("_transportLost", "connection failed")
+
+func _onEnetServerGone():
+	call_deferred("_transportLost", "relay disconnected")
 
 # ---------------------------------------------------------------- packets
 
 func _myName():
 	if transport == Transport.STEAM:
 		return Steam.getPersonaName()
-	return "%s-%d" % [OS.get_environment("USERNAME"), myId % 1000]
+	if devName != "":
+		return devName
+	var user = OS.get_environment("USERNAME")
+	if user == "":
+		user = OS.get_environment("USER")
+	return "%s-%d" % [user, myId % 1000]
 
 func _peerSeen(id):
 	if not peers.has(id):
@@ -258,7 +500,11 @@ func _peerGone(id):
 		peers.erase(id)
 
 func _sendHello(peer):
-	_send(peer, {"t": "hello", "name": _myName(), "host": isHost, "dived": dived}, true)
+	_send(peer, {"t": "hello", "name": _myName(), "host": isHost, "dived": dived, "proto": PROTO, "mod": _modVersion(), "build": str(CurrentGame.get("version"))}, true)
+
+func _modVersion() -> String:
+	var root = get_parent()
+	return str(root.get("MOD_VERSION")) if root != null else "?"
 
 # Transport-level send. On ENet, clients can only talk to the server (1); anything for
 # another client goes through the server, which forwards by the envelope's "to".
@@ -268,6 +514,8 @@ func _sendRaw(peer, env: Dictionary, reliable: bool = true):
 		Transport.STEAM:
 			Steam.sendP2PPacket(peer, bytes, P2P_RELIABLE if reliable else P2P_UNRELIABLE, CHANNEL)
 		Transport.ENET:
+			if enet == null:
+				return
 			enet.set_transfer_mode(NetworkedMultiplayerPeer.TRANSFER_MODE_RELIABLE if reliable else NetworkedMultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
 			if isHost or peer == 1:
 				enet.set_target_peer(peer)
@@ -310,11 +558,15 @@ func _physics_process(delta):
 			while size > 0:
 				var p = Steam.readP2PPacket(size, CHANNEL)
 				if p.has("data"):
-					_recvRaw(p.steam_id_remote, p.data)
+					# this game's GodotSteam names the sender "remote_steam_id"; older builds "steam_id_remote"
+					_recvRaw(p.get("remote_steam_id", p.get("steam_id_remote", 0)), p.data)
 				size = Steam.getAvailableP2PPacketSize(CHANNEL)
+			_steamWatch()
 		Transport.ENET:
+			if enet == null:
+				return
 			enet.poll()
-			while enet.get_available_packet_count() > 0:
+			while enet != null and enet.get_available_packet_count() > 0:
 				var from = enet.get_packet_peer()
 				_recvRaw(from, enet.get_packet())
 
@@ -323,7 +575,12 @@ func _physics_process(delta):
 		if pingTimer >= PING_EVERY:
 			pingTimer = 0.0
 			pingSeq += 1
-			pingSent[pingSeq] = OS.get_ticks_msec()
+			var t = OS.get_ticks_msec()
+			pingSent[pingSeq] = t
+			# one ping goes to every peer, so keep each entry until its pongs are in (or 5 s, if some are lost)
+			for seq in pingSent.keys():
+				if t - pingSent[seq] > 5000:
+					pingSent.erase(seq)
 			_broadcast({"t": "ping", "seq": pingSeq}, false)
 
 	_sessionTick(delta)
@@ -334,9 +591,22 @@ func _recvRaw(link, bytes: PoolByteArray):
 	if not (env is Dictionary) or not env.has("m") or not env.has("f"):
 		Debug.l("COOP: bad packet on link %s (%d bytes)" % [link, bytes.size()])
 		return
+	# The sender is the link, never what the packet claims: on Steam the link is the sender; on ENet the relay
+	# (server) checks its clients, and a client hears only the relay, which forwards with the checked sender.
+	var forged = false
+	match transport:
+		Transport.STEAM:
+			forged = env.f != link
+		Transport.ENET:
+			forged = (env.f != link) if isHost else (link != 1)
+	if forged:
+		Debug.l("COOP: packet on link %s claims sender %s, dropped" % [link, env.f])
+		return
 	if transport == Transport.ENET and isHost and env.has("to") and env.to != myId:
 		# relay client -> client
 		var to = env.to
+		if not peers.has(to):
+			return   # already gone
 		env.erase("to")
 		var reliable = env.get("rel", true)
 		env.erase("rel")
@@ -348,9 +618,36 @@ func _recvRaw(link, bytes: PoolByteArray):
 		return
 	_recv(env.f, env.m)
 
+# Field types of the core packets; a packet that doesn't match is dropped, not half-applied (review R26).
+const SHAPES = {
+	"peerlist": {"ids": TYPE_ARRAY},
+	"peergone": {"id": TYPE_INT},
+	"ping": {"seq": TYPE_INT},
+	"pong": {"seq": TYPE_INT},
+	"ship": {"cfg": TYPE_DICTIONARY},
+	"intent": {"s": TYPE_DICTIONARY},
+	"state": {"p": TYPE_VECTOR2, "r": TYPE_REAL, "v": TYPE_VECTOR2, "w": TYPE_REAL},
+}
+const BEACON_SHAPE = {"zone": TYPE_STRING, "p": TYPE_VECTOR2, "v": TYPE_VECTOR2, "r": TYPE_REAL}
+
+func _shaped(msg: Dictionary, shape: Dictionary, optional: bool) -> bool:
+	for k in shape:
+		if msg.has(k):
+			if typeof(msg[k]) != shape[k]:
+				return false
+		elif not optional:
+			return false
+	return true
+
 func _recv(from, msg: Dictionary):
-	if not msg.has("t"):
+	if not msg.has("t") or typeof(msg.t) != TYPE_STRING:
 		return
+	if (SHAPES.has(msg.t) and not _shaped(msg, SHAPES[msg.t], false)) or (msg.t == "beacon" and not _shaped(msg, BEACON_SHAPE, true)):
+		Debug.l("COOP: malformed %s from %s dropped" % [msg.t, from])
+		return
+	if incompatible.has(from) and msg.t != "hello":
+		return
+	heardFrom[from] = OS.get_ticks_msec() / 1000.0
 	match msg.t:
 		"peerlist":
 			for id in msg.ids:
@@ -359,20 +656,38 @@ func _recv(from, msg: Dictionary):
 		"peergone":
 			_peerGone(msg.id)
 		"hello":
+			var why = _incompatibility(msg)
+			if why != "":
+				if not incompatible.has(from):
+					Debug.l("COOP: HELLO from %s name=%s turned away: %s" % [from, msg.get("name"), why])
+				incompatible[from] = "%s: %s" % [msg.get("name"), why]
+				_peerGone(from)
+				emit_signal("session_changed")
+				return
+			incompatible.erase(from)
 			_peerSeen(from)
 			peers[from].name = str(msg.get("name"))
-			Debug.l("COOP: HELLO from %s name=%s host=%s dived=%s" % [from, msg.get("name"), msg.get("host"), msg.get("dived")])
+			Debug.l("COOP: HELLO from %s name=%s host=%s dived=%s mod=%s build=%s" % [from, msg.get("name"), msg.get("host"), msg.get("dived"), msg.get("mod"), msg.get("build")])
 		"ping":
 			_send(from, {"t": "pong", "seq": msg.seq}, false)
 		"pong":
 			var t0 = pingSent.get(msg.seq, -1)
 			if t0 >= 0:
-				stats.rtt_ms = OS.get_ticks_msec() - t0
-				pingSent.erase(msg.seq)
+				var rtt = OS.get_ticks_msec() - t0
+				stats.rtt_ms = rtt
+				if peers.has(from):
+					peers[from].rtt = rtt
 		"beacon":
 			_peerSeen(from)
+			var now = OS.get_ticks_msec() / 1000.0
+			var old = peers[from].beacon
+			# measured ring velocity between two beacons (a paused game still reports its ship's velocity)
+			if old != null and old.has("p") and msg.has("p") and now > peers[from].beaconAt:
+				peers[from].moved = (msg.p - old.p) / (now - peers[from].beaconAt)
+			else:
+				peers[from].erase("moved")
 			peers[from].beacon = msg
-			peers[from].beaconAt = OS.get_ticks_msec() / 1000.0
+			peers[from].beaconAt = now
 		"shipreq":
 			if dived:
 				_sendShip(from)
@@ -385,6 +700,8 @@ func _recv(from, msg: Dictionary):
 			if pp != null:
 				pp.netSchedule = msg.s
 		"state":
+			if peers.has(from):
+				peers[from].state = {"p": msg.p, "r": msg.r, "v": msg.v, "w": msg.w, "at": OS.get_ticks_msec()}
 			var pp = _puppetOf(from)
 			if pp != null:
 				pp.netState = {"p": msg.p, "r": msg.r, "v": msg.v, "w": msg.w, "at": OS.get_ticks_msec()}
@@ -396,6 +713,16 @@ func _recv(from, msg: Dictionary):
 				handlers[msg.t][0].call(handlers[msg.t][1], from, msg)
 			else:
 				Debug.l("COOP: unknown packet type %s" % msg.t)
+
+# "" when a hello's sender can play with us, else why not (shown in the friend list).
+func _incompatibility(msg: Dictionary) -> String:
+	if msg.get("proto") != PROTO:
+		return "different co-op protocol (%s, ours %d)" % [msg.get("proto", "none"), PROTO]
+	if str(msg.get("mod")) != _modVersion():
+		return "different mod version (%s, ours %s)" % [msg.get("mod"), _modVersion()]
+	if str(msg.get("build")) != str(CurrentGame.get("version")):
+		return "different game build (%s, ours %s)" % [msg.get("build"), CurrentGame.get("version")]
+	return ""
 
 func _puppetOf(id):
 	if peers.has(id):
@@ -438,6 +765,7 @@ func _sendBeacon():
 		b.r = localShip.global_rotation
 		b.ship = localShip.get("shipName")
 		b.tr = localShip.get("transponder")
+		b.kind = "ship" if "shipConfig" in localShip else "pod"   # after a ship dies the player flies its lifepod
 	_broadcast(b, false)
 
 func _sessionTick(delta):
@@ -461,6 +789,15 @@ func _sessionTick(delta):
 		for id in peers.keys():
 			_despawnPuppet(id, "left dive")
 		_sendBeacon()
+
+	# --- our ship died: the game hands the player its lifepod (or a rescue ship); follow it
+	if dived and (localShip == null or not is_instance_valid(localShip) or localShip.get("dead") == true):
+		var next = CurrentGame.getPlayerShip()
+		if next != null and is_instance_valid(next) and next != localShip and next.is_inside_tree():
+			Debug.l("COOP: local ship is now '%s' (%s)" % [next.name, "ship" if "shipConfig" in next else "pod"])
+			localShip = next
+			lastIntent = null
+			_sendBeacon()
 
 	# --- dev auto-dive: everyone dives on their own, same target (+ offset)
 	if autoDive and not autoDiveStarted and _atTitle() and peers.size() > 0:
@@ -494,11 +831,14 @@ func _sessionTick(delta):
 			if not pr.inRange:
 				pr.inRange = true
 				Debug.l("COOP: %s (%s) entered range at %.0f px" % [id, pr.name, dist])
-			if pr.cfg == null:
+			if pr.beacon.get("kind", "ship") != "ship":
+				# a lifepod is not a ship-ctrl ship; Npc.gd mirrors it from peers[id].state
+				_despawnPuppet(id, "flying a lifepod")
+			elif pr.cfg == null:
 				if not pr.has("cfgAskedAt") or now - pr.cfgAskedAt > 2.0:
 					pr.cfgAskedAt = now
 					_send(id, {"t": "shipreq"}, true)
-			elif _puppetOf(id) == null and game != null:
+			elif _puppetOf(id) == null and game != null and now - pr.get("spawnFailedAt", -9.0) > 1.0:
 				_spawnPuppet(id, game)
 		else:
 			if pr.inRange:
@@ -564,7 +904,8 @@ func _spawnPuppet(id, game):
 		pr.puppet = ship
 		Debug.l("COOP: puppet '%s' for %s spawned at %s" % [ship.name, pr.name, CurrentGame.globalCoords(ship.global_position)])
 	else:
-		Debug.l("COOP: puppet spawn for %s failed (no free spot), retrying" % pr.name)
+		Debug.l("COOP: puppet spawn for %s failed (no free spot), retrying in 1 s" % pr.name)
+		pr.spawnFailedAt = OS.get_ticks_msec() / 1000.0
 		ship.free()
 
 var overlay = null

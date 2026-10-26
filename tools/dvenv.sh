@@ -72,8 +72,14 @@ dv_steam_instance() {
 }
 
 # dv_launch <data root, or "" for the main one> <game args...>: start one instance in the background
+DV_MAX_WINDOWS="${DV_MAX_WINDOWS:-4}"
 dv_launch() {
   local root="$1"; shift
+  # Hard cap on game windows per run (dev3 uses 4: the relay plus three players)
+  if [ "$(dv_running)" -ge "$DV_MAX_WINDOWS" ]; then
+    echo "refusing to launch another game window: $DV_MAX_WINDOWS already open (DV_MAX_WINDOWS)" >&2
+    exit 4
+  fi
   cd "$DV_GAME"
   if [ "$DV_OS" = windows ]; then
     ( APPDATA="$(cygpath -w "${root:-$DV_DATA}")" "$DV_EXE" "$@" >/dev/null 2>&1 & )
@@ -100,4 +106,22 @@ dv_lock() {
     echo "game busy, held by: $(cat "$DV_LOCK/owner" 2>/dev/null). Wait, or run tools/stop.sh if it's yours." >&2
     exit 2
   fi
+  # A run starts only on a clean desktop: any copy of the game already open (a leftover test window, or Tim
+  # playing) blocks it, so runs never stack up windows.
+  local n; n="$(dv_running)"
+  if [ "$n" -gt 0 ]; then
+    rm -rf "$DV_LOCK"
+    echo "refusing to start: $n copy/copies of the game already open. Close them (or tools/stop.sh if they're a dev run)." >&2
+    exit 3
+  fi
+}
+
+# dv_running: how many copies of the game are open right now
+dv_running() {
+  if [ "$DV_OS" = windows ]; then
+    tasklist //FI "IMAGENAME eq Delta-V.exe" //NH 2>/dev/null | grep -ci "^Delta-V.exe"
+  else
+    pgrep -fc "$DV_EXE" 2>/dev/null
+  fi
+  return 0   # grep -c / pgrep -c print 0 and exit 1 when nothing runs; under set -e that killed dev3
 }
