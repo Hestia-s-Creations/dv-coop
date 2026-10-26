@@ -121,6 +121,7 @@ dv_running() {
   if [ "$DV_OS" = windows ]; then
     tasklist //FI "IMAGENAME eq Delta-V.exe" //NH 2>/dev/null | grep -ci "^Delta-V.exe"
   else
-    pgrep -fc "$DV_EXE" 2>/dev/null || echo 0
+    pgrep -fc "$DV_EXE" 2>/dev/null
   fi
+  return 0   # grep -c / pgrep -c print 0 and exit 1 when nothing runs; under set -e that killed dev3
 }
