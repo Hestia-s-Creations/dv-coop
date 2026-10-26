@@ -39,6 +39,9 @@ combat and the in-game join menu are still to come. See Status below.
   join, and the cell survives its authority quitting (handoff under 1 s) or crashing (1.5 s). Puppets of other
   players' ships take no local damage and never touch your save. Checked at six resolutions from 1280x720 to
   3440x1440 and at the game's UI-scale extremes. Details: [docs/M3.md](docs/M3.md).
+- **M6 polish and release (in progress).** The mod checks the game build and switches itself off with a plain message
+  on any other build; `tools/build.py --release` builds the zip for players without the dev tooling; a game-update
+  runbook ([docs/UPDATING.md](docs/UPDATING.md)) and the troubleshooting section below. Plan: [docs/M6.md](docs/M6.md).
 - Not yet proven: Steam P2P between two different Steam accounts and networks; a human flying into a cell
   (all M3 testing used dev flags on one PC); HiDPI laptops and Windows display scaling above 100%.
 
@@ -46,7 +49,8 @@ combat and the in-game join menu are still to come. See Status below.
 
 ```
 src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop/...
-  modmain.gd            ModLoader entry: installs script extensions, attaches CoopNet
+  modmain.gd            ModLoader entry: checks the game build, installs script extensions, attaches CoopNet
+  Compat.gd             the game build pin: on any other build the mod switches itself off and says why
   net/CoopNet.gd        Steam lobby + P2P transport, ENet fallback, ping/pong, puppets, module hooks
   net/Cell.gd           which players share a world, who simulates it, origin adoption, handoff
   net/RockSync.gd       asteroid net ids, recipes and streaming from the cell authority
@@ -54,8 +58,10 @@ src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop
   ext/asteroid.gd       tracked rocks only break on the machine that simulates them
   ext/AsteroidSpawner.gd  never despawns tracked rocks or puppets; members don't slipstream
   ui/FriendOverlay.gd   friend markers drawn from beacons
-tools/build.py          zips src/ -> build/dv-coop.zip (reproducible, prints its SHA-256) and copies it into <game>/mods/
+tools/build.py          zips src/ -> build/dv-coop.zip, or build/dv-coop-release.zip with --release (reproducible,
+                        prints its SHA-256) and copies it into <game>/mods/ as dv-coop.zip
 tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
+tools/gate_m6.py        M6 release gate: verify, --release --strict, reproducible zips, and the build-pin run logs
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
 tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
@@ -83,10 +89,11 @@ It checks, and prints a report:
    files, or opens connections. None of that is allowed. What the mod *does* use is printed in full: the Steam lobby
    and P2P packets, the ENet transport for LAN testing, the game's launch options, your Windows/Linux user name as a
    fallback display name, and the game's own save slot.
-4. **The zip matches the source.** It builds `dv-coop.zip` from `src/` and prints its SHA-256. The build is
-   reproducible, so a `dv-coop.zip` you download from anywhere should hash the same as one built from the matching commit.
+4. **The zip matches the source.** It builds `dv-coop.zip` (everything, for development) and `dv-coop-release.zip`
+   (dev-only code left out, see below) from `src/` and prints both SHA-256s. The build is reproducible, so a zip you
+   download from anywhere should hash the same as the one built from the matching commit.
 
-The mod itself is four scripts, under 800 lines in all, if you'd rather just read it.
+The mod is a handful of GDScript files in `src/dv-coop/` if you'd rather just read it; step 2 of the report prints how many and how long.
 
 What the checks can't tell you: whether the code is *good*, and that the friends you play with are trustworthy.
 Lobbies are friends-only, and peers can send each other ship data, so play with people you know.
@@ -96,10 +103,14 @@ After an intended change to any file, run `python tools/verify.py --update` and 
 ## Build and install
 
 ```
-python tools/build.py
+python tools/build.py              # development zip: dev flags, test bots, diagnostics
+python tools/build.py --release    # the zip for playing: dev-only code left out
 ```
 
-Copies `build/dv-coop.zip` into the game's `mods/` folder. The game folder is `DV_GAME` if set, otherwise the
+Copies the zip into the game's `mods/` folder as `dv-coop.zip`, removing any other `dv-coop*.zip` there (the game
+loads every zip in `mods/`). Add `--no-install` to only build. The release build leaves out dev-only files and blanks
+code between `# coop:dev{` and `# coop:dev}` (line numbers stay the same); `--strict` fails if a dev flag is left
+outside those markers. The game folder is `DV_GAME` if set, otherwise the
 first one found of:
 
 - Windows: `C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn`
@@ -165,6 +176,38 @@ no TCP port) from a hard-linked copy of the game with its own `mods/`. Each inst
 `tools/sandbox.sh stop` ends them. Screenshot with
 `ffmpeg -loglevel error -y -f x11grab -video_size 1600x900 -i :99 -frames:v 1 shot.png`.
 Without a GPU the game renders on the CPU (llvmpipe, about 10 fps), which is enough for the net code.
+
+## Troubleshooting
+
+Start with the newest log (see [Logs](#logs)) and search it for `COOP`.
+
+| What you see | Why | What to do |
+| --- | --- | --- |
+| No `COOP:` lines at all in the log | The game didn't load mods. | Add `--enable-mods` to the launch options. Check that `<game>/mods/dv-coop.zip` exists and that the log has `ModLoader: dv-coop.zip loaded.` |
+| `COOP: REFUSED, dv-coop is switched off: this is game build X; dv-coop was made for Y` (also shown on the title screen) | The game updated (or this is the demo), and the mod only runs on the build it was made for. The game plays normally without it. | Get the dv-coop release made for your game build. Until there is one, play without co-op. Maintainers: [docs/UPDATING.md](docs/UPDATING.md). |
+| `ModLoader: dv-coop.zip failed to load.` | The zip is damaged or isn't a zip built by `tools/build.py`. | Rebuild it with `python tools/build.py --release` and compare the SHA-256 with the one published for the release. |
+| Two copies of the mod in the log (every `COOP:` line twice) | More than one dv-coop zip in `mods/`. | Leave only `dv-coop.zip`. `tools/build.py` does this for you. |
+| `COOP: no session requested, CoopNet idle` | The game started without a host or join option. | Launch with `--coop-host` or `--coop-join=<lobby id>` (or `--coop-enet-*` on a LAN). |
+| `COOP: waiting for Steam` and nothing after it | Steam isn't running or isn't logged in. | Start Steam and log in, then start the game. |
+| `COOP: Steam singleton missing` | The game was started without its Steam module, for example a non-Steam copy. | Steam lobbies need the Steam release. On a LAN, `--coop-enet-host` / `--coop-enet-join` work without Steam. |
+| `lobby_joined ... response=` anything but 1 | The lobby is full (5 players), gone, or friends-only and you aren't on the host's friends list. | Ask the host for a fresh lobby id or an invite. |
+| Friend shows as "no signal" | No beacon from them for 6 s. They crashed, lost their connection, or are sitting in a loading screen. | Wait a few seconds. If it stays that way, have them restart and rejoin. |
+| You never see a friend's ship, but their marker is close | Puppets appear under 40,000 px (about 40 km) and only while both of you are in the rings. | Fly closer. Check the log for `entered range` and `puppet ... spawned`. |
+| Time won't slow down (no bullet time) | In a shared area (a *cell*) time is pinned to normal speed for everyone. | Expected. It comes back once you fly apart (`CELL ... time scale released`). |
+| The pause menu doesn't stop the game in a cell | Pausing would freeze everyone. | Expected. You're still in space, so find a quiet spot first. Alone, pause works as normal. |
+| Script errors | A bug. | Look in `engine_log.txt` next to the logs, and report the error with your `dv_log_N.txt` and the dv-coop commit or release zip SHA-256. |
+
+Before reporting a problem: `python tools/verify.py` must say `PASS` on the copy you built from, and say which game
+build you have (title screen, bottom right).
+
+### Known limits
+
+- The game build is pinned (1.90.12). The mod switches itself off on any other build until a matching release is out.
+- Up to five players per lobby. Each plays their own save: money, cargo and story stay yours.
+- Bullet time and pause only work when you're alone.
+- Lobbies are friends-only and peers trust each other's ship data. Play with people you know.
+- Not yet proven: Steam P2P between different accounts and networks, long four-player sessions, and HiDPI screens
+  or Windows display scaling above 100 %. These are the M6 human gates ([docs/M6.md](docs/M6.md)).
 
 ## Logs
 

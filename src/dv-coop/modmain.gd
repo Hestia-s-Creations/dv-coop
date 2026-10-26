@@ -6,7 +6,7 @@ extends Node
 
 const MOD_PRIORITY = 0
 const MOD_VERSION = "0.0.1-m0"
-const GAME_BUILD_EXPECTED = "1.90.12"
+const Compat = preload("res://dv-coop/Compat.gd")   # the game build pin (Compat.BUILD)
 
 # Order matters: asteroid.gd before AsteroidSpawner.gd, which preloads the asteroid scenes that use asteroid.gd.
 # Missing files are skipped, so each module's extension can land on its own branch first.
@@ -38,7 +38,9 @@ var selfTest = false
 
 func _init(loader = null):
 	modLoader = loader
-	Debug.l("COOP: modmain %s loading (expects game %s)" % [MOD_VERSION, GAME_BUILD_EXPECTED])
+	# Only on the game build this mod was made for; otherwise install nothing and say why (Compat.gd, docs/UPDATING.md).
+	if Compat.refuse(self): return
+	Debug.l("COOP: modmain %s loading (game %s)" % [MOD_VERSION, Compat.BUILD])
 	# Install script extensions here, in _init, before later autoloads (Shipyard etc.)
 	# get a chance to load the original scripts.
 	if modLoader and modLoader.has_method("installScriptExtension"):
@@ -51,6 +53,7 @@ func _init(loader = null):
 		Debug.l("COOP: no ModLoader handle, extensions NOT installed")
 
 func _ready():
+	if has_meta("dvcoop_refused"): return
 	name = "DvCoop"
 	# The game pauses the whole tree on focus loss, the pause key and the Steam overlay. Our networking must keep
 	# running through that, or one player alt-tabbing drops out of the cell after 1.5 s (children inherit this).
@@ -68,7 +71,7 @@ func _runSelfTest():
 	# Wait for the rest of the autoloads (Shipyard) and the boot scene to settle.
 	yield(get_tree().create_timer(4.0), "timeout")
 	var build = CurrentGame.get("version")
-	Debug.l("COOP-SELFTEST: game version %s (expected %s)" % [build, GAME_BUILD_EXPECTED])
+	Debug.l("COOP-SELFTEST: game version %s, VersionLabel.tscn %s (expected %s)" % [build, Compat.gameBuild(), Compat.BUILD])
 	var ship = Shipyard.createShipByName("MADCERF", "helper")
 	if ship == null:
 		Debug.l("COOP-SELFTEST: FAIL, createShipByName returned null")
