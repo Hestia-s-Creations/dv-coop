@@ -349,7 +349,7 @@ def _dmg(insts):
     rows = []
     # relayed/lost (newer builds): hits that reached a peer who no longer owned the rock, passed on / given up
     rx = (r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
-          r"(?: totalEnergy=\S+ relayed=(\d+) lost=(\d+)/([\d.]+))?")
+          r"(?: totalEnergy=\S+ relayed=(\d+) lost=(\d+)/([\d.]+)(?: gone=(\d+)/([\d.]+))?(?: held=(\d+) hops<=(\d+))?)?")
     for i in insts:
         for m in i.grep(rx):
             rows.append((i.name(),) + m.groups()[:9] + (_ts(m.string),) + tuple(m.groups()[9:]))
@@ -360,6 +360,7 @@ def _dmg(insts):
 # line. Near the end of a run one side's log stops before the other side's next line, so lines from the last
 # DMG_TAIL_S s before the first log ends (the run stopping) are reported but only bound the check.
 DMG_TAIL_S = 12
+DMG_MAX_HOPS = 2   # relays per hit: the stale owner passes it on once, and whoever our table names holds it until it moves
 
 
 def gate5(insts):
@@ -372,11 +373,21 @@ def gate5(insts):
     copy_applied = []
     relayed = 0
     lost = []
+    gone = {}   # rock id -> hits that arrived after the rock broke / was eaten on its owner (count as delivered)
+    held = 0
+    hops = []   # rows whose hits took more than DMG_MAX_HOPS relays (a hit goes shooter -> stale owner -> owner)
     for r in _dmg(insts):
+        held += int(r[16] or 0)
+        if int(r[17] or 0) > DMG_MAX_HOPS:
+            hops.append(r)
         _, rid, owner, here, fn, fe, an, ae = r[:8]
         relayed += int(r[11] or 0)
         if int(r[12] or 0):
             lost.append(r)
+        if int(r[14] or 0):
+            gone[rid] = gone.get(rid, 0) + int(r[14])
+            an = int(an) + int(r[14])
+            ae = float(ae) + float(r[15])
         g = (tail if r[10] is not None and r[10] > cut else st).setdefault(rid, [0, 0.0, 0, 0.0])
         st.setdefault(rid, [0, 0.0, 0, 0.0])
         tail.setdefault(rid, [0, 0.0, 0, 0.0])
@@ -398,6 +409,12 @@ def gate5(insts):
         return (f[0] <= f[2] + t[2] and f[2] <= f[0] + t[0]
                 and f[1] <= f[3] + t[3] + 1.0 and f[3] <= f[1] + t[1] + 1.0)
 
+    # a hit may only be written off as "gone" on a rock that really broke: some instance logged it as a fracture parent
+    broke = set()
+    for i in insts:
+        for m in i.grep(r"COOP: OWN o\.new.* parents \[([^\]]*)\]"):
+            broke.update(x.strip() for x in m.group(1).split(",") if x.strip())
+    gone_bad = sorted(k for k in gone if k not in broke)
     bad = [k for k in ids if not ok(k)]
     scored = [k for k in ids if st[k][0] or st[k][2]]
     ev = ["%d rocks hit; forwarded = applied on %d" % (len(ids), len(ids) - len(bad))]
@@ -410,10 +427,27 @@ def gate5(insts):
     if not scored:
         bad.append("(tail only)")
         ev.append("FAIL: every hit came in the last %d s of the run" % DMG_TAIL_S)
-    ev.append("hits relayed to a rock's new owner (in flight across an ownership change): %d" % relayed)
+    # relay staging (--coop-dev-dmg-delay on a shooter, laser,N,claim): hits must cross an ownership change and be relayed
+    staged = any(i.count(r"COOP: OWN dev: forwarded hits held") for i in insts)
+    claims = sum(i.count(r"COOP: BOT laser trial=\d+ id=\S+ claim result=owned") for i in insts)
+    # held-hit staging (--coop-dev-rel-delay): some relayed hits must reach a peer whose table still names the relayer
+    held_staged = any(i.count(r"COOP: OWN dev: o\.rel held") for i in insts)
+    ev.append("hits relayed to a rock's new owner (in flight across an ownership change): %d%s" % (relayed,
+        "" if not staged else "; relay staged (forwarded hits delayed), %d mid-trial claims owned%s" % (
+            claims, "" if relayed >= 1 else "  FAIL (staged, but no hit was relayed)")))
     ev += ["FAIL applied on a copy: %s" % (r,) for r in copy_applied[:5]]
     ev += ["FAIL hits lost (no owner reachable): %s" % (r,) for r in lost[:5]]
-    return not bad and not copy_applied and not lost, ev
+    ev.append("hits held for a stale owner until the table moved on: %d; relays per hit at most %d (limit %d)" % (
+        held, max([int(r[17] or 0) for r in _dmg(insts)] or [0]), DMG_MAX_HOPS))
+    ev += ["FAIL more than %d relays: %s" % (DMG_MAX_HOPS, r) for r in hops[:5]]
+    bad += ["hops"] if hops else []
+    if held_staged and held < 1:
+        ev.append("FAIL: held-hit staging ran (o.rel delayed), but no hit was held")
+        bad.append("held")
+    ev += ["%s: %d hits arrived after the rock broke (counted as applied)%s" % (
+        k, gone[k], "  FAIL (no fracture of it was logged)" if k in gone_bad else "") for k in sorted(gone)]
+    bad += gone_bad
+    return not bad and not copy_applied and not lost and (not staged or relayed >= 1), ev
 
 
 def gate6(insts):

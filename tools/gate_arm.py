@@ -4,22 +4,29 @@ Usage: DV_WHO=<you> python tools/gate_arm.py [2] [34] [10]      (default: all th
 
 Needs the dev slot savegame-arm.dv (a ship with a salvage arm for 2 and 34, an MPU for 10) in the main dev data dir
 (~/dvcoop-data/dV; dv_seed copies it to the other instances). It is a copy of Tim's slot d (TRTL: SALVAGE_ARM, MPU,
-DND_HAUL). Only B and C ever load it: they run on seeded temp copies, while A runs on ~/dvcoop-data itself, so a stock
-save there (a tug rescue ends the dive and saves) would change the dev data. Each phase is one tools/dev3.sh run
+DND_HAUL). A never loads it: B and C run on seeded temp copies, while A runs on ~/dvcoop-data itself, so a stock save
+there (a tug rescue or an escape to Enceladus ends the dive and saves) would change the dev data. Where A needs the arm
+(phase 34) it loads SLOT_A, a throwaway copy made fresh before each launch. Each phase is one tools/dev3.sh run
 (relay + 3 players, 4 windows), kept under 10 minutes, then tools/stop.sh (which keeps the logs), tools/savecheck.sh
 before/after, and tools/gate_m4.py on the kept logs:
   2   gate 2r   every instance runs --coop-bot=frac,N (whichever forms the cell coordinates); B and C load the arm
                 save and reach with their arms when they are members.
-  34  gates 3,4 B and C load the arm save and run --coop-bot=claw,1,hold; each member among them locks a rock its arm
+  34  gates 3,4 A (on SLOT_A), B and C run --coop-bot=claw,1,hold; each member among them locks a rock its arm
                 takes (the salvage arm's stock mineral filter) and holds it. Gate 4 hard-kills the cell authority when a
                 surviving holder is not the peer promoted in its place (the next-lowest id), which then must adopt that
                 rock from o.list while the holder keeps holding; then gate 3 hard-kills that holder (the new authority
-                re-owns within 2 s). If the authority is A, both B and C hold and gate 4 always stages; if it is B or C,
-                it stages when A's id is below the other arm member's. Otherwise gate 3 only, and it relaunches (3 tries).
+                re-owns within 2 s). With all three holding, both survivors hold and one of them is not promoted, so gate
+                4 stages whatever the ids (with only B and C, runs 060224/060756/061503 drew B as authority and C as next
+                three times). Otherwise gate 3 only, and it relaunches (3 tries).
   10  gate 10r  C loads the arm save and runs --coop-bot=mpu,N: the stock MPU claims, processes and frees rocks.
 Announce every launch to the lead first (game window rules); this script prints the line to send.
+
+Every launch (here and in m4_final.py) first checks the master dev saves (~/dvcoop-data/dV/savegame*.dv, which dev3
+seeds B and C from) against MASTER, a sha1 manifest beside dV/, and refuses to launch, naming the file, if one differs
+or is new or missing: a stock save on A must never spread to the other instances (run 063348). Record the manifest
+once the masters are known good:  python tools/gate_arm.py --record-master
 """
-import os, re, subprocess, sys, time, glob
+import hashlib, json, os, re, shutil, subprocess, sys, time, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WHO = os.environ.get("DV_WHO", "")
@@ -27,6 +34,8 @@ WIN = os.name == "nt"
 DATA = os.path.expanduser(os.environ.get("DV_DATA", "~/dvcoop-data"))
 INST = os.path.expanduser(os.environ.get("DV_INST", "~/AppData/Local/Temp" if WIN else "/tmp"))
 SLOT = "savegame-arm.dv"
+MASTER = os.path.join(DATA, "master-saves.json")   # name -> sha1 of every known-good master save (beside dV/, not seeded)
+SLOT_A = "savegame-arm-a.dv"   # A's throwaway copy of SLOT (phase 34): a stock save on A lands here, never in SLOT
 DIVE_X, DIVE_Y, OFF_B, OFF_C = 150000, 0, 1200, 60000
 BASE = {"DIVE_X": str(DIVE_X), "DIVE_Y": str(DIVE_Y), "OFF_B": str(OFF_B), "WARP_C": "60", "WARP_C_DIST": "900"}
 LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop_instB", "dV", "logs"),
@@ -110,7 +119,37 @@ def at_arm_dive(fn):
     return run
 
 
+def _masters():
+    """name -> sha1 of each master save, A's throwaway copy left out (it is remade from SLOT before every use)."""
+    out = {}
+    for f in sorted(glob.glob(os.path.join(DATA, "dV", "savegame*.dv"))):
+        if os.path.basename(f) != SLOT_A:
+            out[os.path.basename(f)] = hashlib.sha1(open(f, "rb").read()).hexdigest()
+    return out
+
+
+def record_master():
+    json.dump(_masters(), open(MASTER, "w"), indent=1, sort_keys=True)
+    print("recorded %d master saves -> %s" % (len(_masters()), MASTER))
+
+
+def check_master():
+    """Refuse to launch on a master save that differs from the manifest (or with no manifest at all)."""
+    if not os.path.exists(MASTER):
+        raise SystemExit("no master save manifest %s: check the masters, then python tools/gate_arm.py --record-master"
+                         % MASTER)
+    want, now = json.load(open(MASTER)), _masters()
+    bad = ["%s %s" % (n, "missing" if n not in now else "new" if n not in want else "changed (%s, manifest %s)"
+                      % (now[n][:8], want[n][:8])) for n in sorted(set(want) | set(now)) if want.get(n) != now.get(n)]
+    if bad:
+        raise SystemExit("refusing to launch: master dev save(s) in %s differ from %s: %s. Restore each to its manifest "
+                         "hash (not blindly from <slot>.dvb: the game renames the previous save there on every save, so "
+                         "after two saves it is a bad one too, run 063348) or re-record if the change is intended."
+                         % (os.path.join(DATA, "dV"), MASTER, "; ".join(bad)))
+
+
 def launch(label, extra):
+    check_master()   # before announcing: a refused launch opens no windows
     log("send the lead: launching 4 windows ~10 min for gate %s" % label)
     sh(["tools/dev3.sh"], dict(BASE, **{"EXTRA_" + k: v for k, v in extra.items()}))
     sh(["tools/savecheck.sh", "before", "arm-" + label])
@@ -242,13 +281,16 @@ def holding(inst, stable=1):
 
 @at_arm_dive
 def phase34(attempt):
-    # B and C both load the arm save and hold a rock (whichever of them is a member). Gate 4 needs a holder that
-    # survives the authority's kill and is not the peer promoted in its place (the next-lowest id), so wait for both
-    # holders, then pick the kill order from the ids; only when no holder qualifies does it fall back to gate 3 alone.
+    # A, B and C all load the arm save and hold a rock (whichever of them are members). Gate 4 needs a holder that
+    # survives the authority's kill and is not the peer promoted in its place (the next-lowest id): with all three
+    # holding, the two survivors both hold and one of them is not promoted, whatever the ids (with only B and C holding,
+    # runs 060224/060756/061503 drew B as authority and C as next three times: gate 4 could not be staged).
     # Returns {"3": passed, "4": passed}, with None for a gate this launch could not stage.
-    hold = "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT
-    launch("3-4", {"B": hold, "C": hold})
-    if not loadout_ok("3-4", "BC"):
+    hold = "--coop-slot=%s --coop-bot=claw,1,hold"
+    # run 063348: A on SLOT itself saved over the dev master after a stock escape to Enceladus; A gets a fresh copy
+    shutil.copyfile(os.path.join(DATA, "dV", SLOT), os.path.join(DATA, "dV", SLOT_A))
+    launch("3-4", {"A": hold % SLOT_A, "B": hold % SLOT, "C": hold % SLOT})
+    if not loadout_ok("3-4", "ABC"):
         return {"3": False, "4": False}
     if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
         log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
@@ -305,6 +347,9 @@ def phase10():
 
 
 def main(argv):
+    if argv[:1] == ["--record-master"]:
+        record_master()
+        return 0
     if not WHO:
         raise SystemExit("set DV_WHO (the game lock holder name)")
     if not os.path.exists(os.path.join(DATA, "dV", SLOT)):

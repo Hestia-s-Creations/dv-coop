@@ -37,6 +37,12 @@ extends Node
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
 #                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
+#                         laser,N,claim (gate 5 relay staging, with --coop-dev-dmg-delay): CLAIM_AFTER s into each
+#                         trial the bot claims the rock it is lasering and holds it to the trial's end, so hits it
+#                         forwarded before the claim reach the old owner after the grant and are relayed back.
+#                         Even trials let go CLAIM_SHORT s after the grant instead (with --coop-dev-rel-delay), so the
+#                         relayed hits reach us after we let go and go back to an authority that still names us: held.
+#                         Lines: COOP: BOT laser trial=i id=... claim / claim result=owned|not-owned, released.
 #   --coop-bot=eat[,N]    gate 10 (protocol level, no MPU fitted), on a member. Each trial claims a tracked rock the
 #                         authority owns (outside the frac bot's pool, mineral rocks first), strips half its filler
 #                         (ice rocks: half their mass) the way the MPU does,
@@ -97,6 +103,9 @@ var frac = {"state": "idle"}  # member: {state, trial, id, at (wall ms), until (
 var fracPlan = []             # authority: [{trial, id, at}]
 var fracWatch = []            # authority: [{trial, id, pos, until, n}] counting the shards each fracture spawned
 var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
+var shootClaim = false        # laser,N,claim: claim the target mid-trial (gate 5 relay staging)
+const CLAIM_AFTER = 1.0       # s into a laser,N,claim trial
+const CLAIM_SHORT = 0.2       # s an even laser,N,claim trial holds the rock once granted
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 20
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
@@ -123,6 +132,7 @@ func _ready():
 			keepLast = parts.size() > 2 and parts[2] == "hold"
 			noArm = parts.size() > 2 and parts[2] == "noarm"
 			haulSolo = parts.size() > 2 and parts[2] == "solo"
+			shootClaim = parts.size() > 2 and parts[2] == "claim"
 	if mode == "":
 		Debug.l("COOP: BOT inactive")
 		set_physics_process(false)
@@ -435,7 +445,7 @@ func _mpuTick():
 				if off.length() > 10.0:
 					ship.global_position += off
 					ship.reset_physics_interpolation()
-				ship.linear_velocity = rock.linear_velocity
+				ship.linear_velocity = _shipVel(rock.linear_velocity)
 			if rock.get("fracturing") == true:
 				mpuJob.fracturing = true
 			if mpuJob.state == "feed":
@@ -559,7 +569,7 @@ func _haulTick():
 			if away == Vector2.ZERO:
 				away = Vector2(0, 1)
 			ship.global_position = rock.global_position + away * offset
-			ship.linear_velocity = rock.linear_velocity
+			ship.linear_velocity = _shipVel(rock.linear_velocity)
 			ship.reset_physics_interpolation()
 			var arm = _arm()
 			if arm != null:
@@ -924,7 +934,7 @@ func _seedMinerals(ship, now):
 	if bestD > SEED_NEAR * 1.5:
 		var away = (ship.global_position - rock.global_position).normalized()
 		ship.global_position = rock.global_position + away * SEED_NEAR
-		ship.linear_velocity = rock.linear_velocity
+		ship.linear_velocity = _shipVel(rock.linear_velocity)
 		ship.reset_physics_interpolation()
 	seedJob.id = best
 	seedJob.until = now + 3.0
@@ -960,6 +970,13 @@ func _armTakes(arm, ship, n) -> bool:
 		return ship.isValidMineralTarget(n, arm.get("mineralConfig"))
 	return true
 
+# The velocity the bot gives the ship to match a target, capped: stock ship-ctrl.isInEscapeCondition starts the escape
+# to Enceladus (a dive end and a save) when a player ship goes over 2000 px/s for escapeTime, and a fresh shard can be
+# that fast (run 063348: A matched one and flew home). The teleport keeps the ship on the target anyway.
+const SHIP_MAX_V = 1000.0
+func _shipVel(v: Vector2) -> Vector2:
+	return v.clamped(SHIP_MAX_V)
+
 # Keep the arm's dock area on `at`, moving with the target, until the stock arm locks.
 func _aimArm(arm, ship, at, vel):
 	var area = arm.get("areaDockArea")
@@ -969,7 +986,7 @@ func _aimArm(arm, ship, at, vel):
 	if off.length() > 20.0:
 		ship.global_position += off
 		ship.reset_physics_interpolation()
-	ship.linear_velocity = vel
+	ship.linear_velocity = _shipVel(vel)
 
 # Protocol race without an arm: claim at the agreed instant (jittered so either side can win), then shards.
 func _fracClaim(now):
@@ -1101,7 +1118,8 @@ func _shootTick():
 			if id == "":
 				return
 			trial += 1
-			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME}
+			shoot = {"state": "fire", "id": id, "until": now + SHOOT_TIME, "claimAt": now + CLAIM_AFTER if shootClaim else -1.0,
+				"claimed": false}
 			# fire the way a player does: the ship zeroes every weapon each frame unless its command input is held
 			pressed = _fireAction(ship, w)
 			if pressed != "":
@@ -1113,6 +1131,11 @@ func _shootTick():
 				if pressed != "":
 					Input.action_release(pressed)
 					pressed = ""
+				if shoot.claimed and not shoot.has("let"):
+					Debug.l("COOP: BOT %s trial=%d id=%s claim result=%s, released" % [mode, trial, shoot.id,
+						"owned" if _own().mine.has(shoot.id) else "not-owned"])
+					if rock != null:
+						_own().untouch(rock, "bot")
 				Debug.l("COOP: BOT %s trial=%d id=%s done%s" % [mode, trial, shoot.id, "" if rock != null else " (rock gone)"])
 				shoot = {"state": "idle", "id": "", "until": now + SHOOT_GAP}
 				if trial >= trials:
@@ -1124,8 +1147,18 @@ func _shootTick():
 			if off.length() > 10.0:
 				ship.global_position += off
 				ship.reset_physics_interpolation()
-			ship.linear_velocity = rock.linear_velocity
+			ship.linear_velocity = _shipVel(rock.linear_velocity)
 			ship.angular_velocity = 0.0
+			if shoot.claimAt >= 0 and now >= shoot.claimAt and not shoot.claimed:
+				shoot.claimed = true
+				Debug.l("COOP: BOT %s trial=%d id=%s claim%s" % [mode, trial, shoot.id, " (short)" if trial % 2 == 0 else ""])
+				_own().touch(rock, "bot")   # the grant shows up as own.mine; hits already forwarded are still in flight
+			if shoot.claimed and trial % 2 == 0 and not shoot.has("ownedAt") and _own().mine.has(shoot.id):
+				shoot.ownedAt = now
+			if shoot.has("ownedAt") and not shoot.has("let") and now >= shoot.ownedAt + CLAIM_SHORT:
+				shoot.let = true
+				Debug.l("COOP: BOT %s trial=%d id=%s claim result=owned, released early" % [mode, trial, shoot.id])
+				_own().untouch(rock, "bot")
 			w.fire(1.0)   # also directly: the stock laser tick runs before the ship's next reset (seen working in m4-gate5)
 			if now >= holdLogAt:
 				holdLogAt = now + 1.0
@@ -1249,7 +1282,7 @@ func _clawTick():
 				var off = rock.global_position - area.global_position
 				if off.length() > 20.0:
 					ship.global_position += off
-					ship.linear_velocity = rock.linear_velocity
+					ship.linear_velocity = _shipVel(rock.linear_velocity)
 					ship.reset_physics_interpolation()
 			if claw.result != "":
 				if claw.result == "granted":
@@ -1307,7 +1340,7 @@ func _pickClawRock(ship) -> String:
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) \
-				or skipIds.has(id) or not _armTakes(arm, ship, n):
+				or skipIds.has(id) or not _armTakes(arm, ship, n) or n.linear_velocity.length() > SHIP_MAX_V:
 			continue
 		# hold mode: a rock identified down to its value keeps passing the arm's filter; prefer those
 		var isFinal = keepLast and _idStage(ship, n) == "value"
