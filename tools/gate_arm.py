@@ -213,17 +213,26 @@ def phase2():
 HOLD_FRESH = 3.0   # s: the claw bot logs "holding" every second, at whole-second resolution
 
 
-def holding(inst):
-    """The rock id this instance holds right now: its latest claw "holding" line is at most HOLD_FRESH s old and
-    says locked in the arm and owned (haul drones and the hold also claim; they don't count). None otherwise."""
+# The stock salvage arm often lets go of a fresh grab on its own 2-4 s after locking ("Switching [..] from invalid
+# target"), with or without anything happening in the cell (seen in runs 005702, 014836, 015627; 014836 dropped a
+# minute before any kill). A hold that has lasted HOLD_STABLE lines (one a second) is past that and lasts (012422: 30 s).
+HOLD_STABLE = 5
+
+
+def holding(inst, stable=1):
+    """The rock id this instance holds right now: its last `stable` claw "holding" lines are all for one rock, locked
+    in the arm and owned (haul drones and the hold also claim; they don't count), the latest at most HOLD_FRESH s old.
+    None otherwise."""
     rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)")
-    if not rows:
+    if len(rows) < stable:
         return None
-    last = rows[-1]
-    t = time.mktime(time.strptime(last.group(1), "%Y/%m/%d %H:%M:%S"))
-    if time.time() - t > HOLD_FRESH or last.group(3) != "True" or last.group(4) != "True":
+    last = rows[-stable:]
+    t = time.mktime(time.strptime(last[-1].group(1), "%Y/%m/%d %H:%M:%S"))
+    if time.time() - t > HOLD_FRESH:
         return None
-    return last.group(2)
+    if any(r.group(2) != last[-1].group(2) or r.group(3) != "True" or r.group(4) != "True" for r in last):
+        return None
+    return last[-1].group(2)
 
 
 @at_arm_dive
@@ -256,7 +265,7 @@ def phase34(attempt):
     promoted = min(survivors, key=lambda i: ids[i])
     # gate 4 needs, at the instant of the kill, a member that holds a rock right now and is not the promotion target
     # (a hold can lapse: the arm lets go and the bot reaches again), so poll for that and kill the moment it holds
-    h4 = wait_for(lambda: [i for i in survivors if i != promoted and holding(i)], 90, 0.5) or []
+    h4 = wait_for(lambda: [i for i in survivors if i != promoted and holding(i, HOLD_STABLE)], 120, 0.5) or []
     holders = [i for i in survivors if holding(i)]
     log("ids %s, authority %s, promoted next %s, holding now %s%s" % (ids, x, promoted, holders,
         "" if not h4 else ", gate 4 holder %s with %s" % (h4[0], holding(h4[0]))))
