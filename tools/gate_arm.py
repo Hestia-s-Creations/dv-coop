@@ -35,7 +35,7 @@ LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop
 # only made by breaking class-4 rocks (the bots do that), so this is only a knob for a denser or emptier field.
 ARM_DIVE = {"DIVE_X": os.environ.get("ARM_DIVE_X", str(DIVE_X)), "DIVE_Y": os.environ.get("ARM_DIVE_Y", str(DIVE_Y))}
 FRAC_N = int(os.environ.get("FRAC_N", "30"))   # 12 s an arm trial: 30 fit in the 9-minute limit with the ~2.5 min warm-up
-MPU_N = int(os.environ.get("MPU_N", "3"))
+MPU_N = int(os.environ.get("MPU_N", "2"))   # one mineral (up to ~4 min with seeding) + one ice rock
 LIMIT = 9 * 60
 
 
@@ -60,14 +60,28 @@ def peer(inst):
     return int(m[0].group(1)) if m else None
 
 
+def status(inst):
+    """(role, auth, members) from the instance's latest CELL status line, or None."""
+    m = grep(inst, r"COOP: CELL status role=(\w+) auth=(\d+) .*? members=\[([\d, ]*)\]")
+    if not m:
+        return None
+    last = m[-1]
+    return last.group(1), int(last.group(2)), sorted(int(x) for x in last.group(3).replace(" ", "").split(",") if x)
+
+
 def authority():
-    # the latest cell status line any player logged names the authority
-    best = None
+    # the authority as players in a cell see it (a SOLO line names the player itself: never use one)
     for inst in "ABC":
-        for m in grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: CELL status role=\w+ auth=(\d+)"):
-            if best is None or m.group(1) >= best[0]:
-                best = (m.group(1), int(m.group(2)))
-    return best[1] if best else None
+        s = status(inst)
+        if s and s[0] in ("MEMBER", "AUTHORITY"):
+            return s[1]
+    return None
+
+
+def one_cell():
+    """True once A, B and C all report the same cell (C joins only after its warp, 60 s into its dive)."""
+    ss = [status(i) for i in "ABC"]
+    return all(s and s[0] in ("MEMBER", "AUTHORITY") and len(s[2]) == 3 for s in ss) and len({s[1] for s in ss}) == 1
 
 
 # Git Bash, not WSL's bash.exe, which a bare "bash" can resolve to when this runs outside Git Bash
@@ -213,6 +227,11 @@ def phase34(attempt):
         return {"3": False, "4": False}
     if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
         log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
+        stop("3-4", "")
+        return {"3": None, "4": None}
+    # the promotion order only means something once all three are in one cell (C warps in 60 s into its dive)
+    if not wait_for(one_cell, 120, 2):
+        log("A, B and C never shared one cell: %s" % {i: status(i) for i in "ABC"})
         stop("3-4", "")
         return {"3": None, "4": None}
     ids = {i: peer(i) for i in "ABC"}

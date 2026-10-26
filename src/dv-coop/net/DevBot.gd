@@ -60,7 +60,8 @@ const FRAC_EVERY_ARM = 12.0  # s between trials with a real arm: lead + reach + 
 const EAT_EVERY = 4.0        # s between eat trials
 const MPU_WAIT = 6.0         # s for the intake to take a rock and the claim to resolve
 const MPU_EAT = 90.0         # s for the MPU to finish processing it
-const MPU_MINERAL_WAIT = 120.0  # s the mpu bot looks for (and makes) a mineral rock before taking any rock
+const MPU_MINERAL_WAIT = 240.0  # s the mpu bot keeps trying to get a mineral rock eaten before taking any rock
+const MPU_MINERAL_EAT_MAX = 150.0  # s of filler processing a mineral may need to be picked
 const HAUL_OFFSET = 700.0   # px from the rock to the ship when a haul trial starts
 const HAUL_TIME = 40.0      # s a haul trial watches the drones
 const SHOOT_TIME = 3.0
@@ -351,28 +352,42 @@ func _mpuTick():
 			if mpuMineralSince < 0:
 				mpuMineralSince = now
 			var wantMineral = not mpuMineralFed and now - mpuMineralSince < MPU_MINERAL_WAIT
+			for p in _haulPlants(ship, []):
+				p.enabled = false   # the ship's haul drones claim and push rocks too (seen taking the fed mineral)
+			# a mineral is processed filler first, at the MPU's own rate (kg/s, and only with power): take the one with
+			# the least filler that this MPU can finish in MPU_MINERAL_EAT_MAX
+			var kgps = float(mpu.getKgps()) if mpu.has_method("getKgps") else 0.0
 			var best = ""
-			var bestD = 0.0
+			var bestKey = 0.0
+			var bestEta = 0.0
 			for id in rs.tracked:
 				var n = rs.tracked[id].n
 				if not is_instance_valid(n) or n.get("fracturing") == true or own.owners.has(id) or skipIds.has(id):
 					continue
-				if wantMineral and n.get("mineralContent") == null:
-					continue
-				var d = n.global_position.distance_to(ship.global_position)
-				if best == "" or d < bestD:
+				var key = n.global_position.distance_to(ship.global_position)
+				var eta = 0.0
+				if wantMineral:
+					if n.get("mineralContent") == null:
+						continue
+					eta = n.mass * n.fillerContent * 1000.0 / kgps if kgps > 0 else 0.0
+					if eta > MPU_MINERAL_EAT_MAX:
+						continue
+					key = eta
+				if best == "" or key < bestKey:
 					best = id
-					bestD = d
+					bestKey = key
+					bestEta = eta
 			if best == "":
 				if wantMineral:
 					_seedMinerals(ship, now)
 				return
-			if rs.nodeOf(best).get("mineralContent") != null:
-				mpuMineralFed = true
 			trial += 1
 			skipIds[best] = true
-			mpuJob = {"state": "feed", "id": best, "until": now + MPU_WAIT}
-			Debug.l("COOP: BOT mpu trial=%d id=%s feeding" % [trial, best])
+			var mineral = rs.nodeOf(best).get("mineralContent") != null
+			mpuJob = {"state": "feed", "id": best, "until": now + MPU_WAIT, "mineral": mineral,
+				"eat": (bestEta * 1.5 + 20.0) if mineral else MPU_EAT}
+			Debug.l("COOP: BOT mpu trial=%d id=%s feeding%s" % [trial, best,
+				" (mineral, filler about %.0f s at %.0f kg/s)" % [bestEta, kgps] if mineral else ""])
 		"feed", "eat":
 			var rock = rs.nodeOf(mpuJob.id)
 			if rock == null or not is_instance_valid(rock):
@@ -395,7 +410,7 @@ func _mpuTick():
 			if mpuJob.state == "feed":
 				if own.mine.has(mpuJob.id) and mpu.processing.has(rock):
 					mpuJob.state = "eat"
-					mpuJob.until = now + MPU_EAT
+					mpuJob.until = now + mpuJob.eat
 					Debug.l("COOP: BOT mpu trial=%d id=%s processing comp=%s" % [trial, mpuJob.id, rock.getComposition() if rock.has_method("getComposition") else {}])
 				elif now > mpuJob.until:
 					_mpuEnd("nograb", now)
@@ -404,6 +419,11 @@ func _mpuTick():
 
 func _mpuEnd(result, now):
 	Debug.l("COOP: BOT mpu trial=%d id=%s result=%s" % [trial, mpuJob.id, result])
+	if mpuJob.get("mineral", false):
+		if result == "eaten":
+			mpuMineralFed = true
+		elif not mpuMineralFed:
+			trial -= 1   # the mineral trial is the point of the run: try another one while MPU_MINERAL_WAIT lasts
 	mpuJob = {"state": "idle", "id": "", "until": now + CLAW_GAP}
 	if trial >= trials:
 		Debug.l("COOP: BOT mpu done, %d trials" % trials)
