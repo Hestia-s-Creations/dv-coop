@@ -189,6 +189,12 @@ func untouch(node, why):
 		# a grant may still arrive; _on_o_ok answers it with an immediate release
 		return
 	if mine.has(id):
+		if node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true:
+			# The MPU parks a rock on the disabled layer just before freeing it, and that makes the hold and MPU
+			# areas report it leaving: this "let go" is the MPU eating it. Releasing it would hand the authority a
+			# rock our MPU has already turned into cargo (one copy processed, one still in the field).
+			eat(node, "mpu")
+			return
 		_release(id, node, why)
 
 func _release(id, node, why):

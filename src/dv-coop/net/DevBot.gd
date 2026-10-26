@@ -612,7 +612,12 @@ func _fracMember(now):
 			var rock = rs.nodeOf(frac.id)
 			if rock != null:
 				frac.pos = rock.global_position
-				_aimArm(arm, ship, rock.global_position, rock.linear_velocity)
+				if _armTakes(arm, ship, rock):
+					_aimArm(arm, ship, rock.global_position, rock.linear_velocity)
+				elif not frac.has("untakeable"):
+					frac.untakeable = true   # stock mineral filter: this arm never locks it; wait for the shards
+					Debug.l("COOP: BOT frac trial=%d id=%s parent is not a target this arm takes (mineral filter)" % [
+						frac.trial, frac.id])
 			if claw.result == "granted":
 				_fracEnd(arm, "rock", now)
 			elif claw.result.begins_with("denied") or rock == null:
@@ -620,6 +625,8 @@ func _fracMember(now):
 				frac.state = "shards"
 				frac.until = now + FRAC_SHARD_WAIT
 				frac.skip = {}
+				frac.seen = {}
+				frac.takeable = {}
 				claw.id = ""
 				claw.result = ""
 				Debug.l("COOP: BOT frac trial=%d id=%s parent %s, reaching for a shard" % [frac.trial, frac.id,
@@ -640,10 +647,15 @@ func _fracMember(now):
 				var bestD = 0.0
 				for id in rs.tracked:
 					var n = rs.tracked[id].n
-					if frac.before.has(id) or frac.skip.has(id) or not is_instance_valid(n) or n.mass > CLAW_MASS:
+					if frac.before.has(id) or frac.skip.has(id) or not is_instance_valid(n) \
+							or n.global_position.distance_to(frac.pos) >= 1500.0:
 						continue
+					frac.seen[id] = true
+					if not _armTakes(arm, ship, n):
+						continue
+					frac.takeable[id] = true
 					var d = n.global_position.distance_to(frac.pos)
-					if d < 1500.0 and (best == "" or d < bestD):
+					if best == "" or d < bestD:
 						best = id
 						bestD = d
 				claw.id = best
@@ -651,7 +663,18 @@ func _fracMember(now):
 			if shard != null:
 				_aimArm(arm, ship, shard.global_position, shard.linear_velocity)
 			if now > frac.until:
-				_fracEnd(arm, "neither", now)
+				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes" % [frac.seen.size(), frac.takeable.size()])
+
+# Would the stock arm take this rock? A salvage arm (pickupOnlyMineralTargets) only locks rocks the ship's own
+# mineral filter passes (ship.isValidMineralTarget with the arm's saved config: minerals, min value, albedo); read only.
+func _armTakes(arm, ship, n) -> bool:
+	if arm == null or n == null or not is_instance_valid(n):
+		return false
+	if n.mass > arm.get("massLimit"):
+		return false
+	if arm.get("pickupOnlyMineralTargets") == true and ship.has_method("isValidMineralTarget"):
+		return ship.isValidMineralTarget(n, arm.get("mineralConfig"))
+	return true
 
 # Keep the arm's dock area on `at`, moving with the target, until the stock arm locks.
 func _aimArm(arm, ship, at, vel):
@@ -746,8 +769,9 @@ func _fracDone(result, got, note):
 	claw.result = ""
 	frac = {"state": "idle"}
 
-func _fracEnd(arm, result, now, got = ""):
-	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s" % [frac.trial, frac.id, result, "" if got == "" else " (holding %s)" % got])
+func _fracEnd(arm, result, now, got = "", note = ""):
+	Debug.l("COOP: BOT frac trial=%d id=%s result=%s%s%s" % [frac.trial, frac.id, result,
+		"" if got == "" else " (holding %s)" % got, "" if note == "" else " [%s]" % note])
 	arm.enabled = false
 	claw.id = ""
 	claw.result = ""
@@ -925,6 +949,8 @@ func _clawTick():
 			trial += 1
 			claw = {"state": "reach", "id": id, "until": now + CLAW_WAIT, "result": ""}
 			results[id] = trial
+			for p in _haulPlants(ship, []):
+				p.enabled = false   # the ship's haul drones would claim rocks too (their grant is not the arm's)
 			arm.enabled = true
 			Debug.l("COOP: BOT claw trial=%d id=%s reaching" % [trial, id])
 		"reach":
@@ -976,12 +1002,13 @@ func _clawEnd(arm, result, now):
 
 func _pickClawRock(ship) -> String:
 	var rs = _rs()
+	var arm = _arm()
 	var best = ""
 	var bestD = 0.0
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) \
-				or skipIds.has(id):
+				or skipIds.has(id) or not _armTakes(arm, ship, n):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
 		if best == "" or d < bestD:

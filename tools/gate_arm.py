@@ -10,11 +10,12 @@ save there (a tug rescue ends the dive and saves) would change the dev data. Eac
 before/after, and tools/gate_m4.py on the kept logs:
   2   gate 2r   every instance runs --coop-bot=frac,N (whichever forms the cell coordinates); B and C load the arm
                 save and reach with their arms when they are members.
-  34  gates 3,4 C (always a member: it warps in) loads the arm save and runs --coop-bot=claw,1,hold. Once it holds a
-                rock: gate 4 hard-kills the cell authority (the next-lowest id is promoted and must adopt C's rock from
-                o.list while C keeps holding), then gate 3 hard-kills C (the survivor re-owns the rock within 2 s).
-                Gate 4 needs the promoted peer not to be C, i.e. the other non-authority peer's id below C's. Ids are
-                random per launch, so when the draw is wrong this phase only does gate 3 and relaunches (up to 3 times).
+  34  gates 3,4 B and C load the arm save and run --coop-bot=claw,1,hold; each member among them locks a rock its arm
+                takes (the salvage arm's stock mineral filter) and holds it. Gate 4 hard-kills the cell authority when a
+                surviving holder is not the peer promoted in its place (the next-lowest id), which then must adopt that
+                rock from o.list while the holder keeps holding; then gate 3 hard-kills that holder (the new authority
+                re-owns within 2 s). If the authority is A, both B and C hold and gate 4 always stages; if it is B or C,
+                it stages when A's id is below the other arm member's. Otherwise gate 3 only, and it relaunches (3 tries).
   10  gate 10r  C loads the arm save and runs --coop-bot=mpu,N: the stock MPU claims, processes and frees rocks.
 Announce every launch to the lead first (game window rules); this script prints the line to send.
 """
@@ -157,30 +158,49 @@ def phase2():
     return stop("2r", "2r")
 
 
+def holding(inst):
+    # a rock locked in this instance's arm and owned by it (haul drones and the hold also claim; they don't count)
+    return bool(grep(inst, r"COOP: BOT claw holding id=\S+ .*locked=True mine=True"))
+
+
 def phase34(attempt):
-    launch("3-4", {"C": "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT})
-    if not loadout_ok("3-4", "C"):
+    # B and C both load the arm save and hold a rock (whichever of them is a member). Gate 4 needs a holder that
+    # survives the authority's kill and is not the peer promoted in its place (the next-lowest id), so wait for both
+    # holders, then pick the kill order from the ids; only when no holder qualifies does it fall back to gate 3 alone.
+    hold = "--coop-slot=%s --coop-bot=claw,1,hold" % SLOT
+    launch("3-4", {"B": hold, "C": hold})
+    if not loadout_ok("3-4", "BC"):
         return "fail"
-    held = wait_for(lambda: grep("C", r"COOP: BOT claw holding id=(\S+) .*mine=True"), LIMIT - 60)
-    if not held:
-        log("C never held a rock")
+    if not wait_for(lambda: holding("B") or holding("C"), LIMIT - 120):
+        log("no arm ever locked a rock (no target the arm's mineral filter passes nearby?)")
         stop("3-4", "3,4")
         return "retry"
-    auth = authority()
     ids = {i: peer(i) for i in "ABC"}
-    x = [i for i in "AB" if ids[i] == auth]
-    t = [i for i in "AB" if ids[i] != auth]
-    log("holder C=%s, authority %s, other %s" % (ids["C"], x, t))
-    if not x or not t:
+    auth = authority()
+    x = [i for i in "ABC" if ids[i] == auth]
+    if not x:
         stop("3-4", "3,4")
         return "retry"
-    x, t = x[0], t[0]
-    four = ids[t] < ids["C"]
+    x = x[0]
+    survivors = [i for i in "ABC" if i != x]
+    promoted = min(survivors, key=lambda i: ids[i])
+    want = [i for i in survivors if i != promoted and i in "BC"]
+    if want:
+        wait_for(lambda: holding(want[0]), 60)   # the other arm may still be reaching
+    holders = [i for i in survivors if holding(i)]
+    h4 = [i for i in holders if i != promoted]
+    log("ids %s, authority %s, promoted next %s, holders %s" % (ids, x, promoted, holders))
+    four = bool(h4)
     if four:
-        kill(x)   # gate 4: t is promoted, adopts C's rock; C keeps holding
-        wait_for(lambda: grep(t, r"COOP: OWN o\.list adopts"), 20, 1)
+        kill(x)       # gate 4: `promoted` takes over and adopts h4's rock from o.list; h4 keeps holding
+        wait_for(lambda: grep(promoted, r"COOP: OWN o\.list adopts"), 20, 1)
         time.sleep(8)
-    kill("C")     # gate 3: the authority now in charge re-owns the rock
+        kill(h4[0])   # gate 3: the new authority re-owns the rock of the killed holder
+    elif holders:
+        kill(holders[0])   # gate 3 only: the holder is the one who would be promoted
+    else:
+        stop("3-4", "3,4")
+        return "retry"
     time.sleep(6)
     ok = stop("3-4", "3,4" if four else "3")
     return "ok" if ok and four else ("gate3-only" if ok else "fail")

@@ -16,9 +16,11 @@ class Instance:
     def __init__(self, path):
         self.path = path
         self.lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+        # the transport's peer id: ENet's when the run used ENet (a Steam client also logs its Steam id, which
+        # other lines never use), else Steam's
         self.peer = None
-        for line in self.lines:
-            m = re.search(r"COOP: ENet connected to server, I am (\d+)", line) or re.search(r"Steam ready, I am (\d+)", line)
+        for rx in (r"COOP: ENet connected to server, I am (\d+)", r"Steam ready, I am (\d+)"):
+            m = next((m for m in (re.search(rx, l) for l in self.lines) if m), None)
             if m:
                 self.peer = m.group(1)
                 break
@@ -229,7 +231,8 @@ def gate1(insts):
 
 def gate2(insts, arm=False):
     """Mid-fracture grab: the claw ends with the rock or with shards, never both, never neither."""
-    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)(.*)")
+    res = [(i.name(), m.group(1), m.group(2), m.group(3)) for i in insts
+           for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)(.*)")
            if not arm or not re.search(r"\((jitter|no )", m.group(3))]   # noarm lines end "(jitter ..)" / "(no ..)"
     if not res:
         return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N%s)" % ("" if arm else "[,noarm]")]
@@ -243,12 +246,22 @@ def gate2(insts, arm=False):
     bad = []
     for r in res:
         key = r[2]
+        # a real arm's chase notes "[n shards seen, m this arm takes]": a salvage arm only locks rocks the ship's
+        # mineral filter passes, so shards it can't take leave nothing to grab, like a fracture with no shards
+        takes = re.search(r"\[\d+ shards seen, (\d+) this arm takes\]", r[3])
         if key == "neither" and spawned.get(r[1]) == 0:
             key = "neither (fracture spawned no shards: stock)"
+        elif key == "neither" and takes and int(takes.group(1)) == 0:
+            key = "neither (no shard this arm takes: stock mineral filter)"
         elif key not in ("rock", "shards"):
             bad.append(r)
         counts[key] = counts.get(key, 0) + 1
-    return not bad, ["%d trials: %s" % (len(res), counts)] + ["FAIL %s trial %s: %s (shards spawned: %s)" % (r + (spawned.get(r[1], "?"),)) for r in bad[:10]]
+    grabbed = counts.get("rock", 0) + counts.get("shards", 0)
+    ev = ["%d trials: %s" % (len(res), counts)]
+    ev += ["FAIL %s trial %s: %s%s (shards spawned: %s)" % (r + (spawned.get(r[1], "?"),)) for r in bad[:10]]
+    if arm and not grabbed:
+        ev.append("FAIL: the arm took nothing in any trial")
+    return not bad and (grabbed > 0 or not arm), ev
 
 
 def gate3(insts):
@@ -263,10 +276,14 @@ def gate3(insts):
             holder = [h for h in insts if h.peer == m.group(2)]
             last = _ts(holder[0].lines[-1]) if holder and holder[0].lines else None
             dt = _ts(line) - last if last else None
-            good = dt is not None and dt <= 2.0
+            # a claw run must have held it in the arm, not through some other local claim (haul drones, the hold)
+            claw = holder and holder[0].count(r"COOP: BOT claw ")
+            inArm = not claw or holder[0].count(r"BOT claw holding id=%s .*locked=True" % re.escape(m.group(1))) > 0
+            good = dt is not None and dt <= 2.0 and inArm
             ok = ok or good
-            ev.append("%s re-owned %s from %s, %s s after the holder's last log line%s" % (
-                i.name(), m.group(1), m.group(2), "?" if dt is None else "%.0f" % dt, "" if good else "  FAIL (>2 s)"))
+            ev.append("%s re-owned %s from %s, %s s after the holder's last log line%s%s" % (
+                i.name(), m.group(1), m.group(2), "?" if dt is None else "%.0f" % dt, "" if dt is not None and dt <= 2.0 else "  FAIL (>2 s)",
+                "" if inArm else "  FAIL (the holder's arm never locked it)"))
     if not ev:
         ev.append("FAIL: no re-own (hard-kill a member holding a rock: --coop-bot=claw,1,hold)")
     return ok, ev
@@ -285,7 +302,7 @@ def gate4(insts):
                 continue
             t = _ts(line)
             holder = [h for h in insts if h.peer == m.group(2)]
-            rx = re.compile(r"BOT claw holding id=%s .*mine=True" % re.escape(m.group(1)))
+            rx = re.compile(r"BOT claw holding id=%s .*locked=True mine=True" % re.escape(m.group(1)))
             held = [l for l in (holder[0].lines if holder else []) if rx.search(l) and _ts(l) and _ts(l) >= t]
             good = len(held) > 0
             ok = ok or good
@@ -397,7 +414,25 @@ def gate10r(insts):
         ev.append("FAIL: the stock MPU ate no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
     if simulated:
         ev.append("FAIL: %d simulated eat-bot lines; gate 10r is the real MPU only" % simulated)
-    return ok and eaten > 0 and not simulated, ev
+    dup = _mpuDuplicates(insts)
+    ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
+    return ok and eaten > 0 and not simulated and not dup, ev
+
+
+def _mpuDuplicates(insts):
+    """Every rock the stock MPU ate on a member must reach the authority as an o.eat (tombstoned there), never as a
+    release: a release hands the authority back a rock the member already turned into cargo (duplicated ore)."""
+    out = []
+    tomb = {m.group(1) for i in insts for m in i.grep(r"COOP: OWN eaten (\S+)")}
+    released = {m.group(1) for i in insts for m in i.grep(r"COOP: OWN released (\S+) by")}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT (?:mpu|haul) trial=\d+ id=(\S+) result=eaten"):
+            rid = m.group(1)
+            if not i.grep(r"COOP: OWN eat %s \(" % re.escape(rid)):
+                out.append((i.name(), "%s sent no o.eat%s" % (rid, " (released to the authority)" if rid in released else "")))
+            elif rid not in tomb:
+                out.append((i.name(), "the authority never tombstoned %s" % rid))
+    return out
 
 
 def gatehaul(insts):
