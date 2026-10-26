@@ -10,7 +10,7 @@ count those (gate 7). Exit 1 if any selected gate fails.
 import sys, re, glob, os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gate_m4 import Instance, _secs   # noqa: E402
+from gate_m4 import Instance, _secs, group   # noqa: E402
 
 NEAR = 50000   # px: "within 5 km"
 
@@ -213,7 +213,7 @@ def main(argv):
         print(__doc__)
         return 1
     engine = lambda f: f.endswith(".engine.txt") or os.path.basename(f) == "engine_log.txt"
-    logs = [Log(f) for f in files if not engine(f)]
+    logs = [Log(fs) for fs in group([f for f in files if not engine(f)])]
     engines = [Log(f) for f in files if engine(f)]
     print("instances: %s" % ", ".join(i.name() for i in logs))
     failed = False

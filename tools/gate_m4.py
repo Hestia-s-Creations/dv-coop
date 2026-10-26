@@ -12,10 +12,27 @@ Exit 1 if any selected gate fails.
 import sys, re, glob, os
 
 
+def group(files):
+    """One entry per instance: the game rotates a long log into dv_log_0.txt, dv_log_1.txt, ... in the same folder, so
+    those are joined (oldest first); any other file stays on its own."""
+    out, rot = [], {}
+    for f in files:
+        if re.match(r"dv_log_\d+\.txt$", os.path.basename(f)):
+            rot.setdefault(os.path.dirname(os.path.abspath(f)), []).append(f)
+        else:
+            out.append([f])
+    for d, fs in rot.items():
+        out.append(sorted(fs, key=lambda f: (os.path.getmtime(f), f)))
+    return sorted(out)
+
+
 class Instance:
     def __init__(self, path):
-        self.path = path
-        self.lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+        paths = path if isinstance(path, list) else [path]
+        self.path = paths[0]
+        self.lines = []
+        for p in paths:
+            self.lines += open(p, encoding="utf-8", errors="replace").read().splitlines()
         # the ENet id when there is one: every dev instance also logs "Steam ready" with the same shared Steam id
         enet = [m.group(1) for m in (re.search(r"COOP: ENet connected to server, I am (\d+)", l) for l in self.lines) if m]
         steam = [m.group(1) for m in (re.search(r"Steam ready, I am (\d+)", l) for l in self.lines) if m]
@@ -676,7 +693,7 @@ def main(argv):
     if not files:
         print(__doc__)
         return 1
-    insts = [Instance(f) for f in files]
+    insts = [Instance(fs) for fs in group(files)]
     print("instances: %s" % ", ".join(i.name() for i in insts))
     errors = [(i.name(), i.count(r"SCRIPT ERROR")) for i in insts if i.count(r"SCRIPT ERROR")]
     failed = False
