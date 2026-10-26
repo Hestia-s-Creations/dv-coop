@@ -17,7 +17,13 @@ NEAR = 50000   # px: "within 5 km"
 
 class Log(Instance):
     def name(self):
-        return os.path.basename(self.path)
+        base = os.path.basename(self.path)
+        if base.startswith(("dv_log_", "engine_log")):
+            # a stop.sh-kept run: <run>/<instance>/dV/logs/<file>
+            parts = os.path.normpath(self.path).split(os.sep)
+            inst = parts[-4] if len(parts) >= 4 else "?"
+            return "%s/%s" % (inst.replace("dvcoop_inst", ""), base)
+        return base
 
     def after(self, pattern, t, within=None):
         """lines matching pattern at or after second t (and within seconds of it)"""
@@ -206,8 +212,9 @@ def main(argv):
     if not files:
         print(__doc__)
         return 1
-    logs = [Log(f) for f in files if not f.endswith(".engine.txt")]
-    engines = [Log(f) for f in files if f.endswith(".engine.txt")]
+    engine = lambda f: f.endswith(".engine.txt") or os.path.basename(f) == "engine_log.txt"
+    logs = [Log(f) for f in files if not engine(f)]
+    engines = [Log(f) for f in files if engine(f)]
     print("instances: %s" % ", ".join(i.name() for i in logs))
     failed = False
     for g in want:
