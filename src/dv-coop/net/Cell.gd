@@ -22,7 +22,7 @@ extends Node
 #      cell authority (else the lowest-id peer), off to the side of its course, matching its velocity.
 #      --coop-dev-slipstream=<s> as authority with confirmed members, force the stock slipstream every s seconds.
 #      --coop-dev-auth-flip=<s>  s seconds after first joining a cell as a member, treat the live authority as gone
-#                                once: I promote, and resign back to it on the next tick (the warp-in flip of gate flip).
+#                                once: I promote and resign back to it in the same tick (the warp-in flip of gate flip).
 
 signal cell_joined(authority_id)
 signal cell_left()
@@ -89,7 +89,6 @@ var warpDist = WARP_DISTANCE
 var devSlipEvery = -1.0
 var devFlipAfter = -1.0        # --coop-dev-auth-flip
 var devFlipAt = -1.0
-var devFlipBack = 0            # the authority to resign back to on the tick after the forced promote
 var devSlipClock = 0.0
 
 func _ready():
@@ -169,20 +168,21 @@ func _physics_process(delta):
 		heardAt[auth] = max(heardAt.get(auth, now), now)
 	lastTickAt = now
 
-	if devFlipBack != 0:
-		var to = devFlipBack
-		devFlipBack = 0
-		if role == Role.AUTHORITY and auth == net.myId:
-			_leave("dev: authority flip back to %s" % to, to)
 	if devFlipAt >= 0 and now >= devFlipAt and role == Role.MEMBER and mergeTo == 0 and not lost.has(auth):
 		devFlipAt = -1.0
-		# promote this tick, resign back to it on the next: my c.state and c.leave reach the members back to back
-		# (both reliable, same link), as on the warp-in of tim-58-20261026-091313, whatever the old authority sends
-		devFlipBack = auth
-		lost[auth] = now
+		# promote and resign back in the same tick: my c.state and c.leave go out back to back (both reliable, same
+		# link), so a member takes both before the old authority's next c.state, as on the warp-in of
+		# tim-58-20261026-091313 (a tick apart, the old authority's state slipped in between twice)
+		var old = auth
+		lost[old] = now
 		_setGhost(now)
-		_log("dev: authority flip: treating live authority %s as gone" % auth)
-		viewAccum = 1.0
+		_log("dev: authority flip: treating live authority %s as gone" % old)
+		var comp = []
+		for id in lastComp:
+			if id != old:
+				comp.append(id)
+		_promote(comp)
+		_leave("dev: authority flip back to %s" % old, old)
 	# any packet from the authority counts (rock updates, beacons, o.*): during a join burst its unreliable c.hb can
 	# sit behind the snapshot for over AUTH_SILENT while everything else still arrives (docs/M5.md, K1)
 	var lastAuth = max(heardAt.get(auth, now), net.heardFrom.get(auth, 0.0))
