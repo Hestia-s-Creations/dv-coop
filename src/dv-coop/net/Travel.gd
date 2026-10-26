@@ -93,7 +93,10 @@ func friends() -> Array:
 		if b == null or now - pr.beaconAt > net.BEACON_TIMEOUT or b.get("zone") != "rings" or not b.has("p"):
 			continue
 		# where it is going: measured between beacons when we have two, else what the beacon reports
-		out.append({"id": id, "name": pr.name, "p": b.p, "v": pr.get("moved", b.get("v", Vector2(0, 0)))})
+		var v = pr.get("moved", b.get("v", Vector2(0, 0)))
+		if v.length() > 20000.0:
+			v = b.get("v", Vector2(0, 0))   # a jump (fast travel, respawn), not motion
+		out.append({"id": id, "name": pr.name, "p": b.p, "v": v})
 	return out
 
 func friend(id):

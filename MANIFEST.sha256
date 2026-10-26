@@ -39,7 +39,7 @@ b167f1daed672999c761d84ac23409772aba28d3b5e640cd55dca4969a0f9229  src/dv-coop/ne
 7cdb82c96564ef7c588426d6aadd4a5cf56a798a42bd273d9801e7afe4f638aa  src/dv-coop/net/Own.gd
 e5b09fe004e696fd70ec4e2663a4f527cd2be89978bcf76e3be43ca347c0fb9e  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
-a30ca3a0eea0512ba83d53e7cb636eac8d1918c07190df94fe9776b536be16ac  src/dv-coop/net/Travel.gd
+0de19213c345ad9b997d01cc14cc07651af2729de147741a5ab9a3f896dd4531  src/dv-coop/net/Travel.gd
 2a88b19a74a8a539479b42d6017414c75f543865fbd1709d493040e45d5089ae  src/dv-coop/ui/CoopPanel.gd
 c84a8575de008705b7918cbab5e292eb4b434668d432256c6fcec79b7357a520  src/dv-coop/ui/FriendOverlay.gd
 ad0e441b1e47020abba6ed89b9206d82c40387142cc3325daed6dd151efc76f4  tools/build.py
