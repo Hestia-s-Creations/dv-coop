@@ -671,8 +671,15 @@ func _recv(from, msg: Dictionary):
 					peers[from].rtt = rtt
 		"beacon":
 			_peerSeen(from)
+			var now = OS.get_ticks_msec() / 1000.0
+			var old = peers[from].beacon
+			# measured ring velocity between two beacons (a paused game still reports its ship's velocity)
+			if old != null and old.has("p") and msg.has("p") and now > peers[from].beaconAt:
+				peers[from].moved = (msg.p - old.p) / (now - peers[from].beaconAt)
+			else:
+				peers[from].erase("moved")
 			peers[from].beacon = msg
-			peers[from].beaconAt = OS.get_ticks_msec() / 1000.0
+			peers[from].beaconAt = now
 		"shipreq":
 			if dived:
 				_sendShip(from)

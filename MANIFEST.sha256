@@ -33,13 +33,13 @@ cbe5c444911eb0686f9dd10d516f297739c598f0b222bfd3e1117cda8aaad294  src/dv-coop/ex
 0c59b19ec173180543493871508a5866728d4e2733d200bf0aba6bf0613d3eba  src/dv-coop/ext/thruster.gd
 17da59968650d900fb44d7fd77de547569b6ea3bbc89d32d1c603a50c96bba66  src/dv-coop/modmain.gd
 67d20465c0b179502d654c31f367d8b7eb00d4741e71720ad4d091ea602a5147  src/dv-coop/net/Cell.gd
-aa92766ab65e553ce04499e122fd72fca1f3ef10589f9da7944fe4f565203826  src/dv-coop/net/CoopNet.gd
+b167f1daed672999c761d84ac23409772aba28d3b5e640cd55dca4969a0f9229  src/dv-coop/net/CoopNet.gd
 45df7d345917426bb1a80c4ff39a6111e1cbf9bc36ded4b74894fff6e55bc111  src/dv-coop/net/DevBot.gd
 386f41595406ccd680bd07847f89ef497bc19f33c5303a4fce88a66bdf36337c  src/dv-coop/net/Npc.gd
 7cdb82c96564ef7c588426d6aadd4a5cf56a798a42bd273d9801e7afe4f638aa  src/dv-coop/net/Own.gd
 e5b09fe004e696fd70ec4e2663a4f527cd2be89978bcf76e3be43ca347c0fb9e  src/dv-coop/net/RockSync.gd
 6a9f81b539a617a4c028fb74d4596628ac2f0b08ff798ea10eb726fc0f39b50f  src/dv-coop/net/Tick.gd
-47919dcff897e1f079b5e166eb144973c3ac0df99d9c0651f1a226338f58d555  src/dv-coop/net/Travel.gd
+a30ca3a0eea0512ba83d53e7cb636eac8d1918c07190df94fe9776b536be16ac  src/dv-coop/net/Travel.gd
 2a88b19a74a8a539479b42d6017414c75f543865fbd1709d493040e45d5089ae  src/dv-coop/ui/CoopPanel.gd
 c84a8575de008705b7918cbab5e292eb4b434668d432256c6fcec79b7357a520  src/dv-coop/ui/FriendOverlay.gd
 ad0e441b1e47020abba6ed89b9206d82c40387142cc3325daed6dd151efc76f4  tools/build.py

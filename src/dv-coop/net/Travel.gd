@@ -92,7 +92,8 @@ func friends() -> Array:
 		var b = pr.beacon
 		if b == null or now - pr.beaconAt > net.BEACON_TIMEOUT or b.get("zone") != "rings" or not b.has("p"):
 			continue
-		out.append({"id": id, "name": pr.name, "p": b.p, "v": b.get("v", Vector2(0, 0))})
+		# where it is going: measured between beacons when we have two, else what the beacon reports
+		out.append({"id": id, "name": pr.name, "p": b.p, "v": pr.get("moved", b.get("v", Vector2(0, 0)))})
 	return out
 
 func friend(id):
