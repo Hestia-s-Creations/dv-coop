@@ -33,7 +33,7 @@ var holdRetry = {}    # id -> ship: a hold entry waiting for our claim; re-run w
 var born = []         # member: ids of rocks born in our field (fracture shards of rocks we own), sent next tick
 var fractured = {}    # member: ids of rocks we owned that started fracturing, sent with the next o.new
 var fractureIds = {}  # authority: parents tombstoned by o.new (their exit counts as a fracture)
-var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta], ...]
+var dmgQueue = {}     # owner peer -> [[id, epoch, kind, amount, point, delta, hops], ...]
 var streamAccum = 0.0
 var conserveAccum = 0.0
 var role = "solo"     # mirrors RockSync's role
@@ -41,7 +41,8 @@ var lastAuth = -1     # member: the authority we last reported our rocks to (o.l
 var heard = {}        # authority: peer -> time (s) of its last o.u, or of our last grant to it
 var told = {}         # authority: members we've sent the ownership table to
 # gate evidence (5 s lines): beam damage forwarded / applied, bullet contacts applied / suppressed, per rock id
-var dmgStats = {}     # id -> {fwd_n, fwd_e, app_n, app_e, bul_app, bul_fx}
+var dmgStats = {}     # id -> {fwd_n, fwd_e, app_n, app_e, bul_app, bul_fx, relay_n, lost_n, lost_e}
+const DMG_HOPS = 3    # a hit that reaches a peer who no longer owns its rock is relayed to the owner, at most this often
 var dmgLogAccum = 0.0
 
 func stat(id, key, amount = 1.0):
@@ -599,7 +600,7 @@ func forwardDamage(node, kind, amount, point, delta):
 	stat(id, "fwd_e", float(amount))
 	if not dmgQueue.has(to):
 		dmgQueue[to] = []
-	dmgQueue[to].append([id, epochOf(id), kind, float(amount), local, float(delta) if delta != null else 0.0])
+	dmgQueue[to].append([id, epochOf(id), kind, float(amount), local, float(delta) if delta != null else 0.0, 0])
 
 func _flushDamage():
 	for to in dmgQueue:
@@ -613,11 +614,26 @@ func _on_d_ev(from, msg):
 		return
 	var rs = _rs()
 	for it in l:
-		if not (it is Array) or it.size() != 6:
+		if not (it is Array) or it.size() < 6:
 			continue
 		var id = str(it[0])
 		if not ownsHere(id):
-			continue   # it moved on; the sender learns the new owner from o.chg
+			# it moved on while the hit was in flight (run 045053: the shooter forwarded a hit to the authority just
+			# after the authority granted the rock to the shooter): pass it to whoever owns it now, the sender included
+			var hops = int(it[6]) if it.size() > 6 else 0
+			var to = ownerOf(id)
+			if _inCell() and hops < DMG_HOPS and to != net.myId:
+				var fw = it.duplicate()
+				fw.resize(7)
+				fw[6] = hops + 1
+				if not dmgQueue.has(to):
+					dmgQueue[to] = []
+				dmgQueue[to].append(fw)
+				stat(id, "relay_n")
+			else:
+				stat(id, "lost_n")
+				stat(id, "lost_e", float(it[3]))
+			continue
 		var node = rs.nodeOf(id)
 		if node == null:
 			continue
@@ -639,9 +655,13 @@ func _logDamage():
 		var st = dmgStats[id]
 		var n = rs.nodeOf(id)
 		var te = n.get("totalEnergy") if n != null and n.get("totalEnergy") != null else -1.0
-		Debug.l("COOP: OWN dmg %s owner=%s here=%s fwd=%d/%.0f applied=%d/%.0f bullet applied=%d fx=%d totalEnergy=%.1f" % [
-			id, ownerOf(id), "owned" if ownsHere(id) else "copy", st.get("fwd_n", 0), st.get("fwd_e", 0), st.get("app_n", 0),
-			st.get("app_e", 0), st.get("bul_app", 0), st.get("bul_fx", 0), te])
+		# here: owned if this peer owns the rock now or owned it when it applied a hit in these 5 s (hits and bullet
+		# contacts are applied only where ownsHere / not _fxOnly); a short hold can end before the line is written
+		var owned = ownsHere(id) or st.get("app_n", 0) > 0 or st.get("bul_app", 0) > 0
+		Debug.l("COOP: OWN dmg %s owner=%s here=%s fwd=%d/%.0f applied=%d/%.0f bullet applied=%d fx=%d totalEnergy=%.1f relayed=%d lost=%d/%.0f" % [
+			id, ownerOf(id), "owned" if owned else "copy", st.get("fwd_n", 0), st.get("fwd_e", 0), st.get("app_n", 0),
+			st.get("app_e", 0), st.get("bul_app", 0), st.get("bul_fx", 0), te, st.get("relay_n", 0), st.get("lost_n", 0),
+			st.get("lost_e", 0)])
 	dmgStats.clear()
 
 # ---------------------------------------------------------------- tick

@@ -213,24 +213,29 @@ def phase2():
 HOLD_FRESH = 3.0   # s: the claw bot logs "holding" every second, at whole-second resolution
 
 
-# The stock salvage arm often lets go of a fresh grab on its own 2-4 s after locking ("Switching [..] from invalid
-# target"), with or without anything happening in the cell (seen in runs 005702, 014836, 015627; 014836 dropped a
-# minute before any kill). A hold that has lasted HOLD_STABLE lines (one a second) is past that and lasts (012422: 30 s).
+# The stock salvage arm lets go of a fresh grab on its own a few seconds after locking ("Switching [..] from invalid
+# target"; runs 005702, 014836, 015627, 051003): it re-checks its mineral filter every frame (DockingArm.isValidTarget,
+# pickupOnlyMineralTargets), and ship.isValidMineralTarget passes a rock the lidar hasn't identified yet on albedo
+# alone, then drops it once identified (hud/MineralMark) unless it holds a wanted mineral worth the min value. So a
+# hold is final only once the rock is identified down to its value and still passes: the bot logs identified=value
+# takes=True. A hold counts after HOLD_STABLE such lines (one a second).
 HOLD_STABLE = 5
 
 
 def holding(inst, stable=1):
     """The rock id this instance holds right now: its last `stable` claw "holding" lines are all for one rock, locked
-    in the arm and owned (haul drones and the hold also claim; they don't count), the latest at most HOLD_FRESH s old.
-    None otherwise."""
-    rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)")
+    in the arm and owned (haul drones and the hold also claim; they don't count), identified down to its value and
+    passing the arm's mineral filter, the latest at most HOLD_FRESH s old. None otherwise."""
+    rows = grep(inst, r"\[(\d+/\d+/\d+ \d+:\d+:\d+)\]: COOP: BOT claw holding id=(\S+) .*locked=(\w+) mine=(\w+)"
+                      r"(?: identified=(\w+) takes=(\w+))?")
     if len(rows) < stable:
         return None
     last = rows[-stable:]
     t = time.mktime(time.strptime(last[-1].group(1), "%Y/%m/%d %H:%M:%S"))
     if time.time() - t > HOLD_FRESH:
         return None
-    if any(r.group(2) != last[-1].group(2) or r.group(3) != "True" or r.group(4) != "True" for r in last):
+    if any(r.group(2) != last[-1].group(2) or r.group(3) != "True" or r.group(4) != "True"
+           or r.group(5) != "value" or r.group(6) != "True" for r in last):
         return None
     return last[-1].group(2)
 

@@ -98,7 +98,7 @@ var fracPlan = []             # authority: [{trial, id, at}]
 var fracWatch = []            # authority: [{trial, id, pos, until, n}] counting the shards each fracture spawned
 var noArm = false             # frac,N,noarm: claim through Own directly (protocol race, no salvage arm needed)
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
-const MAX_ATTEMPTS = 10
+const MAX_ATTEMPTS = 20
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
 var eatJob = {"id": "", "until": 0.0, "result": ""}
 var mpuJob = {"state": "idle", "id": "", "until": 0.0}   # mpu: feed (intake on the rock, claim pending) -> eat
@@ -1261,6 +1261,8 @@ func _clawTick():
 				_clawEnd(arm, "nolock" if not arm.locked else "nolock:locked-no-answer", now)
 		"hold":
 			if keepLast and trial >= trials and not _own().mine.has(claw.id) and not arm.locked:
+				var r = _rs().nodeOf(claw.id)
+				Debug.l("COOP: BOT claw let go of id=%s: identified=%s takes=%s" % [claw.id, _idStage(ship, r), _armTakes(arm, ship, r)])
 				_clawEnd(arm, "lost", now)   # the arm let go (or ownership was revoked): hold mode tries again
 				return
 			if now >= holdLogAt:
@@ -1268,7 +1270,11 @@ func _clawTick():
 				var rock = _rs().nodeOf(claw.id)
 				if rock != null:
 					var g = CurrentGame.globalCoords(rock.global_position)
-					Debug.l("COOP: BOT claw holding id=%s at %.0f,%.0f locked=%s mine=%s" % [claw.id, g.x, g.y, arm.locked, _own().mine.has(claw.id)])
+					# identified/takes: the salvage arm re-checks its mineral filter every frame, and the lidar identifies a
+					# fresh shard a few seconds into the hold; an unwanted one is then dropped ("Switching [..] from invalid
+					# target"). Only a hold with identified=value takes=True is final (gate_arm stages on that).
+					Debug.l("COOP: BOT claw holding id=%s at %.0f,%.0f locked=%s mine=%s identified=%s takes=%s" % [claw.id, g.x, g.y,
+						arm.locked, _own().mine.has(claw.id), _idStage(ship, rock), _armTakes(arm, ship, rock)])
 			if now >= claw.until and not (keepLast and trial >= trials):
 				_clawEnd(arm, "", now)
 
@@ -1285,20 +1291,33 @@ func _clawEnd(arm, result, now):
 	if trial >= trials:
 		Debug.l("COOP: BOT claw done, %d trials" % trials)
 
+# How far the ship's lidar has identified a rock: none, minerals (value 0) or value (hud/MineralMark).
+func _idStage(ship, n) -> String:
+	if ship == null or n == null or not is_instance_valid(n):
+		return "gone"
+	var idf = ship.get("identifiedObjects").get(hash(n))
+	return "none" if idf == null else ("minerals" if not idf[1] else "value")
+
 func _pickClawRock(ship) -> String:
 	var rs = _rs()
 	var arm = _arm()
 	var best = ""
 	var bestD = 0.0
+	var bestFinal = false
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) \
 				or skipIds.has(id) or not _armTakes(arm, ship, n):
 			continue
+		# hold mode: a rock identified down to its value keeps passing the arm's filter; prefer those
+		var isFinal = keepLast and _idStage(ship, n) == "value"
+		if bestFinal and not isFinal:
+			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if best == "" or d < bestD:
+		if best == "" or d < bestD or (isFinal and not bestFinal):
 			best = id
 			bestD = d
+			bestFinal = isFinal
 	return best
 
 func _onGranted(id):

@@ -347,10 +347,12 @@ def gate4(insts):
 
 def _dmg(insts):
     rows = []
-    rx = r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
+    # relayed/lost (newer builds): hits that reached a peer who no longer owned the rock, passed on / given up
+    rx = (r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
+          r"(?: totalEnergy=\S+ relayed=(\d+) lost=(\d+)/([\d.]+))?")
     for i in insts:
         for m in i.grep(rx):
-            rows.append((i.name(),) + m.groups() + (_ts(m.string),))
+            rows.append((i.name(),) + m.groups()[:9] + (_ts(m.string),) + tuple(m.groups()[9:]))
     return rows
 
 
@@ -368,9 +370,14 @@ def gate5(insts):
     st = {}
     tail = {}
     copy_applied = []
+    relayed = 0
+    lost = []
     for r in _dmg(insts):
         _, rid, owner, here, fn, fe, an, ae = r[:8]
-        g = (tail if r[-1] is not None and r[-1] > cut else st).setdefault(rid, [0, 0.0, 0, 0.0])
+        relayed += int(r[11] or 0)
+        if int(r[12] or 0):
+            lost.append(r)
+        g = (tail if r[10] is not None and r[10] > cut else st).setdefault(rid, [0, 0.0, 0, 0.0])
         st.setdefault(rid, [0, 0.0, 0, 0.0])
         tail.setdefault(rid, [0, 0.0, 0, 0.0])
         g[0] += int(fn)
@@ -403,8 +410,10 @@ def gate5(insts):
     if not scored:
         bad.append("(tail only)")
         ev.append("FAIL: every hit came in the last %d s of the run" % DMG_TAIL_S)
+    ev.append("hits relayed to a rock's new owner (in flight across an ownership change): %d" % relayed)
     ev += ["FAIL applied on a copy: %s" % (r,) for r in copy_applied[:5]]
-    return not bad and not copy_applied, ev
+    ev += ["FAIL hits lost (no owner reachable): %s" % (r,) for r in lost[:5]]
+    return not bad and not copy_applied and not lost, ev
 
 
 def gate6(insts):
