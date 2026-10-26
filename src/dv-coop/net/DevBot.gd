@@ -27,7 +27,8 @@ extends Node
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
 #                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
 #   --coop-bot=eat[,N]    gate 10 (protocol level, no MPU fitted), on a member. Each trial claims a tracked rock the
-#                         authority owns (outside the frac bot's pool), strips half its filler the way the MPU does,
+#                         authority owns (outside the frac bot's pool, mineral rocks first), strips half its filler
+#                         (ice rocks: half their mass) the way the MPU does,
 #                         then frees it the way the MPU does (disabled layer, deferred Tool.remove), so Own sends o.eat.
 #                         Nothing goes into ship state. Lines: COOP: BOT eat trial=i id=... granted comp=... /
 #                         result=denied:<why>|noanswer. The authority's evidence is "COOP: OWN eat-audit" + conserve.
@@ -252,14 +253,17 @@ func _eatTick():
 		return
 	var own = _own()
 	var best = ""
+	var bestKey = ""
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
 		if not is_instance_valid(n) or n.get("fracturing") == true or own.owners.has(id) and own.owners[id] != c.authority():
 			continue
-		if n.mass <= CLAW_MASS and n.get("asteroidClass") != null and n.asteroidClass < 4:
-			continue   # the frac bot's pool (gate 2 may run alongside)
-		if best == "" or id < best:
+		if n.get("asteroidClass") != null and n.asteroidClass < 4 and n.get("mineralContent") == null:
+			continue   # the frac bot's pool (gate 2 may run alongside); mineral rocks are fine to take
+		var key = ("0" if n.get("mineralContent") != null else "1") + id   # mineral rocks first
+		if best == "" or key < bestKey:
 			best = id
+			bestKey = key
 	if best == "":
 		return
 	nextAt = now + EAT_EVERY
@@ -279,6 +283,8 @@ func _mpuEat(n):
 			n.mass = nm
 			n.mineralContent = mm / nm
 		n.fillerContent = 1 - n.mineralContent
+	elif n.get("mineralContent") == null:
+		n.mass *= 0.5   # an ice rock: the MPU turns it into reactive mass
 	Debug.l("COOP: BOT eat trial=%d id=%s granted comp=%s left=%s" % [trial, n.get_meta("dvnet"), before,
 		n.getComposition() if n.has_method("getComposition") else {}])
 	Tool.release(n)
@@ -334,10 +340,12 @@ func _fracCoordinate(c, now):
 	var best = ""
 	for id in rs.rocks:
 		var n = rs.rocks[id]
-		if not is_instance_valid(n) or n.get("fracturing") == true or not rs.isStreamed(id) or n.mass > CLAW_MASS:
+		if not is_instance_valid(n) or n.get("fracturing") == true or not rs.isStreamed(id) or not noArm and n.mass > CLAW_MASS:
 			continue
 		if n.get("asteroidClass") == null or n.asteroidClass >= 4 or n.get("splitEnergyThreshold") == null:
 			continue
+		if n.get("mineralContent") != null:
+			continue   # the eat bot's (gate 10 may run alongside)
 		if net.localShip == null or n.global_position.distance_to(net.localShip.global_position) > 10000.0:
 			continue   # stock fracture spawns shards only inside the authority's simulator range (12 km of its ship)
 		var all = true
@@ -471,7 +479,8 @@ func _fracClaim(now):
 			else:
 				for id in rs.tracked:
 					var n = rs.tracked[id].n
-					if not frac.before.has(id) and id != frac.id and is_instance_valid(n) and frac.pos != null 							and n.global_position.distance_to(frac.pos) < 1500.0:
+					if not frac.before.has(id) and id != frac.id and is_instance_valid(n) and frac.pos != null \
+							and n.global_position.distance_to(frac.pos) < 1500.0:
 						claw.id = id
 						claw.result = ""
 						if _own().touch(n, "bot"):
@@ -713,7 +722,8 @@ func _pickClawRock(ship) -> String:
 	var bestD = 0.0
 	for id in rs.tracked:
 		var n = rs.tracked[id].n
-		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) 				or skipIds.has(id):
+		if not is_instance_valid(n) or n.mass > CLAW_MASS or n.get("fracturing") == true or _own().owners.has(id) \
+				or skipIds.has(id):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
 		if best == "" or d < bestD:

@@ -61,6 +61,7 @@ var replaying = false
 
 func _ready():
 	name = "RockSync"
+	# coop:dev{
 	var sample = OS.get_environment("DVCOOP_RS_SAMPLE")
 	if sample != "" and float(sample) > 0:
 		logEvery = max(0.2, float(sample))
@@ -68,6 +69,7 @@ func _ready():
 	screenDump = OS.get_environment("DVCOOP_RS_SCREEN") == "1"
 	puppetProbe = OS.get_environment("DVCOOP_RS_PUPPETS") == "1"
 	mineralLog = 5 if OS.get_environment("DVCOOP_RS_MINERALS") == "1" else 0
+	# coop:dev}
 	net.on("r.s", self, "_onSpawn")
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
@@ -326,7 +328,9 @@ static func _isNum(x) -> bool:
 	return x is float or x is int
 
 static func _validRecipe(rc) -> bool:
-	return rc is Array and rc.size() == 11 and rc[0] is String and rc[1] is String and _isNum(rc[2]) 		and rc[3] is Vector2 and _isNum(rc[4]) and rc[5] is Vector2 and _isNum(rc[6]) and _isNum(rc[7]) 		and _isNum(rc[8]) and _isNum(rc[9]) and _isNum(rc[10])
+	return rc is Array and rc.size() == 11 and rc[0] is String and rc[1] is String and _isNum(rc[2]) \
+		and rc[3] is Vector2 and _isNum(rc[4]) and rc[5] is Vector2 and _isNum(rc[6]) and _isNum(rc[7]) \
+		and _isNum(rc[8]) and _isNum(rc[9]) and _isNum(rc[10])
 
 # Authority: build a rock a member created (fracture shards, o.new) as one we simulate and stream.
 func buildSimulated(rc):
@@ -446,6 +450,8 @@ func _changeRole(from, to):
 		releaseAll()
 	if to == "member":
 		_freeOwnRocks()
+	else:
+		held.clear()   # r.s held for a member session; nothing will ever release them now
 	receivers.clear()
 	fresh.clear()
 	gone.clear()
@@ -538,7 +544,8 @@ func _authorityTick(delta, cell):
 					spawn.append(_recipe(id, rocks[id]))
 		else:
 			for id in fresh:
-				if rocks.has(id) and not rv.known.has(id) and rocks[id].global_position.distance_to(at) < FAR 						and not _overlapsShipOf(peer, rocks[id]):
+				if rocks.has(id) and not rv.known.has(id) and rocks[id].global_position.distance_to(at) < FAR \
+						and not _overlapsShipOf(peer, rocks[id]):
 					rv.known[id] = true
 					spawn.append(_recipe(id, rocks[id]))
 		if rv.snap:

@@ -371,7 +371,9 @@ def gate10(insts):
     ev += ["FAIL audit %s %s %s" % a for a in badaudit[:5]] + ["FAIL unaudited: %s" % a for a in noaudit[:5]]
     if not sent:
         ev.append("FAIL: no member eats (run --coop-bot=eat,N on a member)")
-    return bool(sent) and not bad and not twice and not lost and not badaudit and not noaudit, ev
+    if not stripped:
+        ev.append("FAIL: no eat had anything processed before it (in = out only proves the trivial case)")
+    return bool(sent) and stripped > 0 and not bad and not twice and not lost and not badaudit and not noaudit, ev
 
 
 def _secs(line):
