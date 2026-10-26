@@ -359,8 +359,12 @@ func _mpuTick():
 		"feed", "eat":
 			var rock = rs.nodeOf(mpuJob.id)
 			if rock == null or not is_instance_valid(rock):
-				# freed: an eat if we owned it up to the end (Own logged "eat <id> (mpu)")
-				_mpuEnd("eaten" if mpuJob.state == "eat" else "missing", now)
+				# gone from our field: the MPU ate it (a mineral rock: processed into cargo) or broke it (an ice rock:
+				# the MPU's energy damage fractures it); Own reports either to the authority (o.eat / o.new)
+				if mpuJob.state != "eat":
+					_mpuEnd("missing", now)
+				else:
+					_mpuEnd("fractured" if mpuJob.get("fracturing", false) else "eaten", now)
 				return
 			var area = mpu.get_node_or_null("MineralProcessingUnit")
 			if area != null:
@@ -369,6 +373,8 @@ func _mpuTick():
 					ship.global_position += off
 					ship.reset_physics_interpolation()
 				ship.linear_velocity = rock.linear_velocity
+			if rock.get("fracturing") == true:
+				mpuJob.fracturing = true
 			if mpuJob.state == "feed":
 				if own.mine.has(mpuJob.id) and mpu.processing.has(rock):
 					mpuJob.state = "eat"

@@ -396,38 +396,66 @@ def gate2r(insts):
 
 
 def gate10r(insts):
-    """Ore audit with a real MPU: gate 10, fed only by the stock MPU (--coop-bot=mpu,N), with at least one rock eaten."""
-    ok, ev = gate10(insts)
-    eaten = sum(i.count(r"COOP: BOT mpu trial=\d+ id=\S+ result=eaten") for i in insts)
-    other = {}
+    """Ore audit with a real MPU (--coop-bot=mpu,N): conservation balances, no rock is eaten twice, every eat audits
+    OK, and every rock the stock MPU consumed on a member reached the authority as consumed (o.eat for a mineral rock
+    processed into cargo, o.new parent for an ice rock its energy damage broke), never as a release."""
+    lines = [(i.name(), m.group(0)) for i in insts for m in i.grep(r"COOP: OWN conserve .*")]
+    bad = [l for l in lines if "MISMATCH" in l[1]]
+    eaten = {}
+    for i in insts:
+        for m in i.grep(r"COOP: OWN eaten (\S+)"):
+            eaten[m.group(1)] = eaten.get(m.group(1), 0) + 1
+    twice = [k for k, n in eaten.items() if n > 1]
+    badaudit = [(i.name(), m.group(1)) for i in insts for m in i.grep(r"COOP: OWN eat-audit (\S+) .* BAD$")]
+    results = {}
     for i in insts:
         for m in i.grep(r"COOP: BOT mpu trial=\d+ id=\S+ result=(\S+)"):
-            other[m.group(1)] = other.get(m.group(1), 0) + 1
+            results[m.group(1)] = results.get(m.group(1), 0) + 1
+    consumed = results.get("eaten", 0) + results.get("fractured", 0)
     simulated = sum(i.count(r"COOP: BOT eat trial=") for i in insts)
     nompu = sum(i.count(r"COOP: BOT mpu: no MPU") for i in insts)
-    ev.append("MPU trials: %s" % (other or "none"))
-    if not eaten:
-        ev.append("FAIL: the stock MPU ate no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
+    dup = _mpuDuplicates(insts)
+    ev = ["%d conservation lines, %d mismatched%s" % (len(lines), len(bad), "; last: " + lines[-1][1][:150] if lines else "")]
+    ev.append("MPU trials: %s; rocks eaten (tombstoned) %d, none twice: %s, audits bad: %d" % (
+        results or "none", len(eaten), not twice, len(badaudit)))
+    ev += ["FAIL %s: %s" % l for l in bad[:5]] + ["FAIL eaten twice: %s" % k for k in twice[:5]]
+    ev += ["FAIL audit %s %s" % a for a in badaudit[:5]]
+    ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
+    if not lines:
+        ev.append("FAIL: no conservation lines (the authority logs one every 30 s)")
+    if not consumed:
+        ev.append("FAIL: the stock MPU consumed no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
     if simulated:
         ev.append("FAIL: %d simulated eat-bot lines; gate 10r is the real MPU only" % simulated)
-    dup = _mpuDuplicates(insts)
-    ev += ["FAIL processed by %s's MPU but %s" % d for d in dup[:5]]
-    return ok and eaten > 0 and not simulated and not dup, ev
+    return bool(lines) and not bad and not twice and not badaudit and consumed > 0 and not simulated and not dup, ev
 
 
 def _mpuDuplicates(insts):
-    """Every rock the stock MPU ate on a member must reach the authority as an o.eat (tombstoned there), never as a
-    release: a release hands the authority back a rock the member already turned into cargo (duplicated ore)."""
+    """Every rock a member's stock MPU consumed (bot result eaten / fractured) must reach the authority as consumed:
+    an eat it tombstoned, or a fracture parent it took from o.new. A release of that rock after the processing started
+    hands the authority back a rock that is gone on the member: duplicated ore."""
     out = []
     tomb = {m.group(1) for i in insts for m in i.grep(r"COOP: OWN eaten (\S+)")}
-    released = {m.group(1) for i in insts for m in i.grep(r"COOP: OWN released (\S+) by")}
+    parents = set()
     for i in insts:
-        for m in i.grep(r"COOP: BOT (?:mpu|haul) trial=\d+ id=(\S+) result=eaten"):
-            rid = m.group(1)
-            if not i.grep(r"COOP: OWN eat %s \(" % re.escape(rid)):
-                out.append((i.name(), "%s sent no o.eat%s" % (rid, " (released to the authority)" if rid in released else "")))
-            elif rid not in tomb:
-                out.append((i.name(), "the authority never tombstoned %s" % rid))
+        for m in i.grep(r"COOP: OWN o\.new from \d+: \d+ shards built, parents \[(.*)\]"):
+            parents |= {p.strip() for p in m.group(1).split(",") if p.strip()}
+    released = {}
+    for i in insts:
+        for line in i.lines:
+            m = re.search(r"COOP: OWN released (\S+) by", line)
+            if m:
+                released.setdefault(m.group(1), []).append(_ts(line))
+    for i in insts:
+        for m in i.grep(r"COOP: BOT (?:mpu|haul) trial=\d+ id=(\S+) result=(eaten|fractured)"):
+            rid, how = m.group(1), m.group(2)
+            start = [_ts(l) for l in i.lines if re.search(r"COOP: BOT (?:mpu|haul) trial=\d+ id=%s (?:processing|d0=)" % re.escape(rid), l)]
+            t0 = min(start) if start else None
+            late = [t for t in released.get(rid, []) if t0 is None or (t is not None and t >= t0)]
+            if late:
+                out.append((i.name(), "%s was released to the authority instead of %s" % (rid, "eaten" if how == "eaten" else "reported as a fracture")))
+            elif rid not in tomb and rid not in parents:
+                out.append((i.name(), "the authority never took %s as consumed (no eaten / o.new parent)" % rid))
     return out
 
 

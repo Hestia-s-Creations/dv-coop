@@ -35,7 +35,7 @@ LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop
 # only made by breaking class-4 rocks (the bots do that), so this is only a knob for a denser or emptier field.
 ARM_DIVE = {"DIVE_X": os.environ.get("ARM_DIVE_X", str(DIVE_X)), "DIVE_Y": os.environ.get("ARM_DIVE_Y", str(DIVE_Y))}
 FRAC_N = int(os.environ.get("FRAC_N", "30"))   # 12 s an arm trial: 30 fit in the 9-minute limit with the ~2.5 min warm-up
-MPU_N = int(os.environ.get("MPU_N", "5"))
+MPU_N = int(os.environ.get("MPU_N", "3"))
 LIMIT = 9 * 60
 
 
@@ -232,7 +232,8 @@ def phase10():
     launch("10r", {"C": "--coop-slot=%s --coop-bot=mpu,%d" % (SLOT, MPU_N)})
     if not loadout_ok("10r", "C", arm=False, mpu=True):
         return False
-    wait_for(lambda: grep("C", r"COOP: BOT mpu done|COOP: BOT mpu: no MPU"), LIMIT, 10)
+    # under 10 min in all: ~0.5 min launch, at most 7 min of trials, 35 s for a conservation line, stop
+    wait_for(lambda: grep("C", r"COOP: BOT mpu done|COOP: BOT mpu: no MPU"), 7 * 60, 10)
     time.sleep(35)   # a conservation line (every 30 s) after the last eat
     return stop("10r", "10r")
 

@@ -189,15 +189,24 @@ func untouch(node, why):
 		# a grant may still arrive; _on_o_ok answers it with an immediate release
 		return
 	if mine.has(id):
-		if node.collision_layer == DISABLED_LAYER and node.get("fracturing") != true:
-			# The MPU parks a rock on the disabled layer just before freeing it, and that makes the hold and MPU
-			# areas report it leaving: this "let go" is the MPU eating it. Releasing it would hand the authority a
-			# rock our MPU has already turned into cargo (one copy processed, one still in the field).
-			eat(node, "mpu")
-			return
 		_release(id, node, why)
 
+# Hand a rock we own back to the authority, unless it is already on its way out of the field here. Both ways out
+# park the rock on the disabled collision layer, which makes the hold / MPU / arm areas report it leaving, so the
+# "let go" that brings us here can be either of them (reference: MineralProcessingUnit.gd, asteroid.gd):
+#   - fracturing (stock asteroid._physics_process once totalEnergy passes splitEnergyThreshold; for an ice rock the
+#     MPU's applyEnergyDamage does exactly that): it leaves as a fracture parent with its shards (o.new);
+#   - not fracturing (the MPU's `remove` branch: mineral rock processed into cargo, deferred Tool.remove): an eat.
+# Releasing either would hand the authority back a rock that is gone here: a duplicate.
 func _release(id, node, why):
+	if node.get("fracturing") == true:
+		mine.erase(id)
+		fractured[id] = true   # reported as a parent in the next o.new
+		Debug.l("COOP: OWN %s let go of %s while it fractures: reported as a fracture, not released" % [why, id])
+		return
+	if node.collision_layer == DISABLED_LAYER:
+		eat(node, "mpu")
+		return
 	mine.erase(id)
 	var c = _cell()
 	var e = epochOf(id)
