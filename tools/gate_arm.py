@@ -2,12 +2,14 @@
 
 Usage: DV_WHO=<you> python tools/gate_arm.py [2] [34] [10]      (default: all three phases, in that order)
 
-Needs the dev slot savegame-arm.dv (a ship with a salvage arm and an MPU) in the main dev data dir (~/dvcoop-data/dV;
-dv_seed copies it to the other instances). Each phase is one tools/dev3.sh run (relay + 3 players, 4 windows),
-kept under 10 minutes, then tools/stop.sh (which keeps the logs), tools/savecheck.sh before/after, and
-tools/gate_m4.py on the kept logs:
-  2   gate 2r   A and B load the arm save and run --coop-bot=frac,N (whichever forms the cell coordinates, the other
-                reaches with its arm). C runs no bot.
+Needs the dev slot savegame-arm.dv (a ship with a salvage arm for 2 and 34, an MPU for 10) in the main dev data dir
+(~/dvcoop-data/dV; dv_seed copies it to the other instances). It is a copy of Tim's slot d (TRTL: SALVAGE_ARM, MPU,
+DND_HAUL). Only B and C ever load it: they run on seeded temp copies, while A runs on ~/dvcoop-data itself, so a stock
+save there (a tug rescue ends the dive and saves) would change the dev data. Each phase is one tools/dev3.sh run
+(relay + 3 players, 4 windows), kept under 10 minutes, then tools/stop.sh (which keeps the logs), tools/savecheck.sh
+before/after, and tools/gate_m4.py on the kept logs:
+  2   gate 2r   every instance runs --coop-bot=frac,N (whichever forms the cell coordinates); B and C load the arm
+                save and reach with their arms when they are members.
   34  gates 3,4 C (always a member: it warps in) loads the arm save and runs --coop-bot=claw,1,hold. Once it holds a
                 rock: gate 4 hard-kills the cell authority (the next-lowest id is promoted and must adopt C's rock from
                 o.list while C keeps holding), then gate 3 hard-kills C (the survivor re-owns the rock within 2 s).
@@ -127,8 +129,8 @@ def kill(inst):
     return False
 
 
-def loadout_ok(label, insts, mpu=False):
-    """Fail fast: every instance that loaded the arm save must log a loadout with the arm (and the MPU) mounted."""
+def loadout_ok(label, insts, arm=True, mpu=False):
+    """Fail fast: every instance that loaded the arm save must log a loadout with what the phase needs mounted."""
     got = wait_for(lambda: all(grep(i, r"COOP: BOT loadout ") for i in insts) and
                    {i: grep(i, r"COOP: BOT loadout .*")[-1].group(0) for i in insts}, 120)
     if not got:
@@ -136,19 +138,20 @@ def loadout_ok(label, insts, mpu=False):
     else:
         for i, line in got.items():
             log("%s %s" % (i, line))
-        if all("arm=True" in l and (not mpu or "mpu=True" in l) for l in got.values()):
+        if all((not arm or "arm=True" in l) and (not mpu or "mpu=True" in l) for l in got.values()):
             return True
-        log("FAIL: %s does not have the %s mounted; stopping this phase" % (SLOT, "salvage arm and MPU" if mpu else "salvage arm"))
+        need = " and ".join(n for n, w in (("salvage arm", arm), ("MPU", mpu)) if w)
+        log("FAIL: %s does not have the %s mounted; stopping this phase" % (SLOT, need))
     stop(label, "")
     return False
 
 
 def phase2():
     arm = "--coop-slot=%s --coop-bot=frac,%d" % (SLOT, FRAC_N)
-    launch("2r", {"A": arm, "B": arm})
-    if not loadout_ok("2r", "AB"):
+    launch("2r", {"A": "--coop-bot=frac,%d" % FRAC_N, "B": arm, "C": arm})
+    if not loadout_ok("2r", "BC"):
         return False
-    done = wait_for(lambda: sum(len(grep(i, r"COOP: BOT frac trial=\d+ id=\S+ shards spawned=")) for i in "AB") >= FRAC_N, LIMIT, 10)
+    done = wait_for(lambda: sum(len(grep(i, r"COOP: BOT frac trial=\d+ id=\S+ shards spawned=")) for i in "ABC") >= FRAC_N, LIMIT, 10)
     log("fracture trials %s" % ("complete" if done else "cut at the time limit"))
     time.sleep(8)   # the last trial's member result
     return stop("2r", "2r,10")
@@ -185,7 +188,7 @@ def phase34(attempt):
 
 def phase10():
     launch("10r", {"C": "--coop-slot=%s --coop-bot=mpu,%d" % (SLOT, MPU_N)})
-    if not loadout_ok("10r", "C", mpu=True):
+    if not loadout_ok("10r", "C", arm=False, mpu=True):
         return False
     wait_for(lambda: grep("C", r"COOP: BOT mpu done|COOP: BOT mpu: no MPU"), LIMIT, 10)
     time.sleep(35)   # a conservation line (every 30 s) after the last eat
