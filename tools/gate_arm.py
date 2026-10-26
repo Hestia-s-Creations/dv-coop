@@ -235,7 +235,7 @@ def phase10():
     # under 10 min in all: ~0.5 min launch, at most 7 min of trials, 35 s for a conservation line, stop
     wait_for(lambda: grep("C", r"COOP: BOT mpu done|COOP: BOT mpu: no MPU"), 7 * 60, 10)
     time.sleep(35)   # a conservation line (every 30 s) after the last eat
-    return stop("10r", "10r")
+    return stop("10r", "10r,memberfrac")   # the MPU breaking ice is a member fracture: its shards must spawn
 
 
 def main(argv):
