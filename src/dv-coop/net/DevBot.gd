@@ -140,8 +140,25 @@ func _cell():
 func _secs() -> float:
 	return OS.get_ticks_msec() / 1000.0
 
+# Read-only evidence for a bot ship running dry (helpless: no remass -> the stock rescue tow docks it home, which
+# saves the slot): every SHIP_LOG_EVERY s, "COOP: BOT ship remass=kg/max cap=.. drones=kg/max cutscene=..".
+const SHIP_LOG_EVERY = 10.0
+var shipLogAt = 0.0
+
+func _shipLog():
+	var now = _secs()
+	var ship = net.localShip if net != null else null
+	if now < shipLogAt or ship == null or not is_instance_valid(ship):
+		return
+	shipLogAt = now + SHIP_LOG_EVERY
+	Debug.l("COOP: BOT ship remass=%.0f/%.0f cap=%.0f drones=%.1f/%.1f helpless=%s cutscene=%s" % [ship.get("reactiveMass"),
+		ship.get("reactiveMassMax"), ship.get("capacitor"), ship.get("droneParts"), ship.get("dronePartsMax"),
+		ship.isHelpless() if ship.has_method("isHelpless") else "?", ship.get("cutscene")])
+
 func _physics_process(delta):
 	_fitArm()
+	if mode != "":
+		_shipLog()
 	if not seedWatch.empty():
 		_seedWatchTick(_secs())
 	if mode == "claw":
@@ -677,6 +694,7 @@ func _fracMember(now):
 				frac.skip = {}
 				frac.seen = {}
 				frac.takeable = {}
+				frac.held = {}
 				claw.id = ""
 				claw.result = ""
 				Debug.l("COOP: BOT frac trial=%d id=%s parent %s, reaching for a shard" % [frac.trial, frac.id,
@@ -690,6 +708,8 @@ func _fracMember(now):
 					return
 			if claw.id != "" and (claw.result.begins_with("denied") or rs.nodeOf(claw.id) == null):
 				frac.skip[claw.id] = true
+				if claw.result == "denied:held":
+					frac.held[claw.id] = true   # another claw got it first: one owner, the race this gate is about
 				claw.id = ""
 				claw.result = ""
 			if claw.id == "" and frac.pos != null:
@@ -713,7 +733,8 @@ func _fracMember(now):
 			if shard != null:
 				_aimArm(arm, ship, shard.global_position, shard.linear_velocity)
 			if now > frac.until:
-				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes" % [frac.seen.size(), frac.takeable.size()])
+				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes, %d held by another%s" % [frac.seen.size(),
+					frac.takeable.size(), frac.held.size(), "" if frac.held.empty() else " (" + PoolStringArray(frac.held.keys()).join(" ") + ")"])
 
 # Make mineral rocks the way a player does: break a class-4 rock next to the ship (the ring spawns no minerals). A
 # class-4 rock broken with more than twice its split energy obliterates one class down (asteroid.gd: e = totalEnergy/2

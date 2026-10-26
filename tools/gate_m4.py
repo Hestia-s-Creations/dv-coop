@@ -197,6 +197,7 @@ def gate9c(insts):
 # ---------------------------------------------------------------- Own track (gates 1-6, 10; tim-58)
 
 import datetime
+import time
 
 
 def _ts(line):
@@ -244,11 +245,23 @@ def gate2(insts, arm=False):
         key = r[2]
         # a real arm's chase notes "[n shards seen, m this arm takes]": a salvage arm only locks rocks the ship's
         # mineral filter passes, so shards it can't take leave nothing to grab, like a fracture with no shards
-        takes = re.search(r"\[\d+ shards seen, (\d+) this arm takes\]", r[3])
+        takes = re.search(r"\[\d+ shards seen, (\d+) this arm takes", r[3])
+        # shards another member's arm got first (this claim denied "held", the other's trial ended holding it): one
+        # owner per shard, which is the race itself
+        # The deny must fall inside this trial's shard chase (after its "reaching for a shard", before its result).
+        inst = [i for i in insts if i.name() == r[0]][0]
+        chase = [k for k, l in enumerate(inst.lines) if re.search(r"COOP: BOT frac trial=%s .*reaching for a shard" % r[1], l)]
+        end = [k for k, l in enumerate(inst.lines) if re.search(r"COOP: BOT frac trial=%s .*result=" % r[1], l)]
+        window = inst.lines[chase[-1]:end[-1]] if chase and end and chase[-1] < end[-1] else []
+        held = sorted(set(m.group(1) for i in insts if i is not inst
+                          for m in i.grep(r"COOP: BOT frac trial=%s id=\S+ result=shards \(holding (\S+)\)" % r[1])
+                          if any(re.search(r"COOP: OWN denied %s \(held\)" % re.escape(m.group(1)), l) for l in window)))
         if key == "neither" and spawned.get(r[1]) == 0:
             key = "neither (fracture spawned no shards: stock)"
         elif key == "neither" and takes and int(takes.group(1)) == 0:
             key = "neither (no shard this arm takes: stock mineral filter)"
+        elif key == "neither" and takes and held and int(takes.group(1)) <= len(held):
+            key = "neither (every shard this arm takes went to another arm first)"
         elif key not in ("rock", "shards"):
             bad.append(r)
         counts[key] = counts.get(key, 0) + 1
@@ -337,32 +350,59 @@ def _dmg(insts):
     rx = r"COOP: OWN dmg (\S+) owner=(\d+) here=(\w+) fwd=(\d+)/([\d.]+) applied=(\d+)/([\d.]+) bullet applied=(\d+) fx=(\d+)"
     for i in insts:
         for m in i.grep(rx):
-            rows.append((i.name(),) + m.groups())
+            rows.append((i.name(),) + m.groups() + (_ts(m.string),))
     return rows
+
+
+# A forward line sums the hits of its last 5 s; the owner applies them on arrival and logs them in its own next 5 s
+# line. Near the end of a run one side's log stops before the other side's next line, so lines from the last
+# DMG_TAIL_S s before the first log ends (the run stopping) are reported but only bound the check.
+DMG_TAIL_S = 12
 
 
 def gate5(insts):
     """Beams: every beam hit a shooter forwards is applied once, on the rock's owner, and never on a copy."""
-    fwd = {}
-    app = {}
+    ends = [max([t for t in map(_ts, i.lines[-50:]) if t] or [0]) for i in insts]
+    cut = min(ends) - DMG_TAIL_S if ends else 0
+    # per rock id: [fwd n, fwd e, applied n, applied e] in time, and the same for the tail
+    st = {}
+    tail = {}
     copy_applied = []
     for r in _dmg(insts):
         _, rid, owner, here, fn, fe, an, ae = r[:8]
-        f = fwd.setdefault(rid, [0, 0.0])
-        a = app.setdefault(rid, [0, 0.0])
-        f[0] += int(fn)
-        f[1] += float(fe)
-        a[0] += int(an)
-        a[1] += float(ae)
+        g = (tail if r[-1] is not None and r[-1] > cut else st).setdefault(rid, [0, 0.0, 0, 0.0])
+        st.setdefault(rid, [0, 0.0, 0, 0.0])
+        tail.setdefault(rid, [0, 0.0, 0, 0.0])
+        g[0] += int(fn)
+        g[1] += float(fe)
+        g[2] += int(an)
+        g[3] += float(ae)
         if here == "copy" and int(an):
             copy_applied.append(r)
-    ids = sorted(k for k in fwd if fwd[k][0] or app[k][0])
+    ids = sorted(k for k in st if any(st[k]) or any(tail[k]))
     if not ids:
         return False, ["FAIL: no forwarded beam hits (run with --coop-bot=laser,N)"]
-    bad = [k for k in ids if fwd[k][0] != app[k][0] or abs(fwd[k][1] - app[k][1]) > 1.0]
+
+    def ok(k):
+        f, t = st[k], tail[k]
+        if not any(t):
+            return f[0] == f[2] and abs(f[1] - f[3]) <= 1.0
+        # every hit forwarded in time was applied by the end, and every hit applied in time was forwarded by the end
+        return (f[0] <= f[2] + t[2] and f[2] <= f[0] + t[0]
+                and f[1] <= f[3] + t[3] + 1.0 and f[3] <= f[1] + t[1] + 1.0)
+
+    bad = [k for k in ids if not ok(k)]
+    scored = [k for k in ids if st[k][0] or st[k][2]]
     ev = ["%d rocks hit; forwarded = applied on %d" % (len(ids), len(ids) - len(bad))]
-    ev += ["%s: forwarded %d/%.0f, applied %d/%.0f%s" % (k, fwd[k][0], fwd[k][1], app[k][0], app[k][1], "  FAIL" if k in bad else "")
-           for k in ids[:12]]
+    ev.append("tail: lines after %s (the first log end %s - %d s) only bound the check; every line before is scored exactly" % (
+        time.strftime("%H:%M:%S", time.localtime(cut)), time.strftime("%H:%M:%S", time.localtime(min(ends))), DMG_TAIL_S))
+    ev += ["%s: forwarded %d/%.0f, applied %d/%.0f%s%s" % (
+        k, st[k][0] + tail[k][0], st[k][1] + tail[k][1], st[k][2] + tail[k][2], st[k][3] + tail[k][3],
+        " (last %d s: forwarded %d, applied %d; the run stopped before both sides logged them)" % (DMG_TAIL_S, tail[k][0], tail[k][2])
+        if any(tail[k]) else "", "  FAIL" if k in bad else "") for k in ids[:12]]
+    if not scored:
+        bad.append("(tail only)")
+        ev.append("FAIL: every hit came in the last %d s of the run" % DMG_TAIL_S)
     ev += ["FAIL applied on a copy: %s" % (r,) for r in copy_applied[:5]]
     return not bad and not copy_applied, ev
 
