@@ -15,7 +15,8 @@ Dev-only code in release builds:
   - lines from "# coop:dev{" to "# coop:dev}" (inclusive, each marker on its own line) are replaced by empty lines,
     so line numbers in a release log match the source. A block must hold whole statements, and the code around it
     must still parse without it (a function or branch must keep at least one statement of its own).
-  - any "--coop-dev-" flag or DVCOOP_ variable left outside a block is listed as a warning; --strict fails on it.
+  - any "--coop-dev-" flag or DVCOOP_ variable left outside a block is listed as a warning, and so is a direct
+    load("res://...") of a DEV_ONLY file; --strict fails on them.
 
 The game folder comes from DV_GAME if set, otherwise the first Steam install found:
 Windows Steam, then the Flatpak Steam and native Steam libraries on Linux.
@@ -38,9 +39,13 @@ CANDIDATES = [
 # Paths inside the zip that only exist for development and gates.
 DEV_ONLY = {
     "dv-coop/net/DevBot.gd",
+    "dv-coop/net/PauseProbe.gd",   # M4 gate 11 input probe, made by Npc.gd's --coop-dev-pause
 }
 DEV_BEGIN = "# coop:dev{"
 DEV_END = "# coop:dev}"
+# a direct load of a dev-only file outside a block would fail in a release zip (a path in a list that is checked with
+# ResourceLoader.exists before loading, like CoopNet.MODULES, is fine)
+DEV_LOAD = re.compile(r'\bload\(\s*"res://(%s)"' % "|".join(re.escape(p) for p in sorted(DEV_ONLY)))
 DEV_TRACE = re.compile(r"--coop-(dev-|autodive|dive-offset|slot=|warp-to-peer|any-build)|DVCOOP_")
 
 def find_game():
@@ -111,7 +116,8 @@ def sources(release):
                 report["blanked"] += blanked
                 report["problems"] += problems
                 for n, line in enumerate(text.split("\n"), 1):
-                    if DEV_TRACE.search(line.split("#", 1)[0]):
+                    code = line.split("#", 1)[0]
+                    if DEV_TRACE.search(code) or DEV_LOAD.search(code):
                         report["traces"].append(f"{name}:{n}: {line.strip()}")
                 data = text.encode("utf-8")
         files.append((name, data))
