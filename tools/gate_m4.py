@@ -345,7 +345,8 @@ def gate6(insts):
 
 
 def gate10(insts):
-    """Ore audit: every conservation line balances (born - gone = live) and every rock is eaten at most once."""
+    """Ore audit: conservation balances (born - gone = live), every member eat reaches the authority exactly once,
+    and each eat's composition = what the authority handed out minus filler the MPU stripped (minerals unchanged)."""
     lines = [(i.name(), m.group(0)) for i in insts for m in i.grep(r"COOP: OWN conserve .*")]
     if not lines:
         return False, ["FAIL: no conservation lines (the authority logs one every 30 s)"]
@@ -355,10 +356,22 @@ def gate10(insts):
         for m in i.grep(r"COOP: OWN eaten (\S+)"):
             eaten[m.group(1)] = eaten.get(m.group(1), 0) + 1
     twice = [k for k, n in eaten.items() if n > 1]
+    sent = [(i.name(), m.group(1)) for i in insts for m in i.grep(r"COOP: OWN eat (\S+) \((\w+)\)")]
+    lost = [s for s in sent if s[1] not in eaten]
+    audits = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: OWN eat-audit (\S+) .* (OK|BAD)$")]
+    noaudit = [i.name() + " " + m.group(0) for i in insts for m in i.grep(r"COOP: OWN eat-audit \S+ in=\?.*")]
+    badaudit = [a for a in audits if a[2] != "OK"]
+    stripped = sum(1 for i in insts for m in i.grep(r"COOP: OWN eat-audit \S+ .* processed=\{.+\} OK$"))
     ev = ["%d conservation lines, %d mismatched; last: %s" % (len(lines), len(bad), lines[-1][1][:170])]
     ev.append("rocks eaten: %d, none twice: %s" % (len(eaten), not twice))
+    ev.append("member eats sent %d, reached the authority %d; audited %d (%d with filler stripped), %d bad, %d unaudited" % (
+        len(sent), len(sent) - len(lost), len(audits), stripped, len(badaudit), len(noaudit)))
     ev += ["FAIL %s: %s" % l for l in bad[:5]] + ["FAIL eaten twice: %s" % k for k in twice[:5]]
-    return not bad and not twice, ev
+    ev += ["FAIL eat never reached the authority: %s %s" % s for s in lost[:5]]
+    ev += ["FAIL audit %s %s %s" % a for a in badaudit[:5]] + ["FAIL unaudited: %s" % a for a in noaudit[:5]]
+    if not sent:
+        ev.append("FAIL: no member eats (run --coop-bot=eat,N on a member)")
+    return bool(sent) and not bad and not twice and not lost and not badaudit and not noaudit, ev
 
 
 def _secs(line):

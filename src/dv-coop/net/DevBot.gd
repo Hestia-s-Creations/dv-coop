@@ -26,6 +26,11 @@ extends Node
 #                         a rock the authority owns, keeps the ship placed so the rock sits on the weapon's line
 #                         of fire at matched velocity, fires for SHOOT_TIME s. Lines: COOP: BOT <mode> trial=i id=...
 #                         firing / done. The damage evidence is Own's 5 s "COOP: OWN dmg" lines on every machine.
+#   --coop-bot=eat[,N]    gate 10 (protocol level, no MPU fitted), on a member. Each trial claims a tracked rock the
+#                         authority owns (outside the frac bot's pool), strips half its filler the way the MPU does,
+#                         then frees it the way the MPU does (disabled layer, deferred Tool.remove), so Own sends o.eat.
+#                         Nothing goes into ship state. Lines: COOP: BOT eat trial=i id=... granted comp=... /
+#                         result=denied:<why>|noanswer. The authority's evidence is "COOP: OWN eat-audit" + conserve.
 
 const RACE_EVERY = 3.0      # s between trials
 const RACE_LEAD = 0.6       # s between bot.go and the claim instant
@@ -38,6 +43,7 @@ const CLAW_MASS = 1200.0    # salvage arm massLimit is 1500
 const FRAC_EVERY = 8.0       # s between fracture-race trials
 const FRAC_LEAD = 1.5        # s between bot.frac and the fracture instant
 const FRAC_SHARD_WAIT = 4.0  # s a denied member waits for its arm to take a shard
+const EAT_EVERY = 4.0        # s between eat trials
 const SHOOT_TIME = 3.0
 const SHOOT_GAP = 3.0
 const SHOOT_DIST = {"laser": 600.0, "massdriver": 900.0}
@@ -67,6 +73,7 @@ var noArm = false             # frac,N,noarm: claim through Own directly (protoc
 var attempts = 0     # claw hold mode: failed attempts so far (each retries the same trial, up to MAX_ATTEMPTS)
 const MAX_ATTEMPTS = 10
 var skipIds = {}     # claw: rocks a failed attempt used; not picked again
+var eatJob = {"id": "", "until": 0.0, "result": ""}
 
 func _ready():
 	name = "DevBot"
@@ -117,6 +124,9 @@ func _physics_process(delta):
 		return
 	if mode == "frac":
 		_fracTick()
+		return
+	if mode == "eat":
+		_eatTick()
 		return
 	if mode != "race":
 		return
@@ -209,6 +219,72 @@ func _member(now):
 			var node = _rs().nodeOf(id)
 			if node != null:
 				_own().untouch(node, "bot")
+
+# ---------------------------------------------------------------- ore audit (gate 10)
+
+func _eatTick():
+	var c = _cell()
+	if c == null or not c.inCell() or c.isAuthority():
+		inCellSince = -1.0
+		return
+	var now = _secs()
+	if inCellSince < 0:
+		inCellSince = now
+	var rs = _rs()
+	if eatJob.id != "":
+		var n = rs.nodeOf(eatJob.id)
+		if eatJob.result == "granted":
+			if n == null:
+				Debug.l("COOP: BOT eat trial=%d id=%s result=lost (gone before the eat)" % [trial, eatJob.id])
+			else:
+				_mpuEat(n)
+			eatJob.id = ""
+		elif eatJob.result.begins_with("denied"):
+			Debug.l("COOP: BOT eat trial=%d id=%s result=%s" % [trial, eatJob.id, eatJob.result])
+			eatJob.id = ""
+		elif now > eatJob.until:
+			Debug.l("COOP: BOT eat trial=%d id=%s result=noanswer" % [trial, eatJob.id])
+			if n != null:
+				_own().untouch(n, "bot")
+			eatJob.id = ""
+		return
+	if trial >= trials or now - inCellSince < SETTLE or now < nextAt:
+		return
+	var own = _own()
+	var best = ""
+	for id in rs.tracked:
+		var n = rs.tracked[id].n
+		if not is_instance_valid(n) or n.get("fracturing") == true or own.owners.has(id) and own.owners[id] != c.authority():
+			continue
+		if n.mass <= CLAW_MASS and n.get("asteroidClass") != null and n.asteroidClass < 4:
+			continue   # the frac bot's pool (gate 2 may run alongside)
+		if best == "" or id < best:
+			best = id
+	if best == "":
+		return
+	nextAt = now + EAT_EVERY
+	trial += 1
+	eatJob = {"id": best, "until": now + 3.0, "result": ""}
+	if own.touch(rs.nodeOf(best), "bot"):
+		eatJob.result = "granted"
+
+# What the MPU does to a rock it owns: strip filler (mass drops, the mineral stays), then free it on the disabled
+# layer. Own sees it leave and sends o.eat with what is left.
+func _mpuEat(n):
+	var before = n.getComposition().duplicate() if n.has_method("getComposition") else {}
+	if n.get("mineralContent") != null and n.get("fillerContent") != null and n.fillerContent > 0.05:
+		var mm = n.mass * n.mineralContent
+		var nm = max(mm, n.mass - n.fillerContent * n.mass * 0.5)
+		if nm > 0:
+			n.mass = nm
+			n.mineralContent = mm / nm
+		n.fillerContent = 1 - n.mineralContent
+	Debug.l("COOP: BOT eat trial=%d id=%s granted comp=%s left=%s" % [trial, n.get_meta("dvnet"), before,
+		n.getComposition() if n.has_method("getComposition") else {}])
+	Tool.release(n)
+	n.collision_mask = 0
+	n.collision_layer = 2147483648
+	Tool.deferCallInPhysics(Tool, "remove", [n])
 
 # ---------------------------------------------------------------- fracture race (gate 2)
 
@@ -646,6 +722,10 @@ func _pickClawRock(ship) -> String:
 	return best
 
 func _onGranted(id):
+	if mode == "eat":
+		if eatJob.id == id:
+			eatJob.result = "granted"
+		return
 	if mode == "frac":
 		if claw.id == id:
 			claw.result = "granted"
@@ -662,6 +742,10 @@ func _onGranted(id):
 	holding[id] = _secs() + RACE_HOLD
 
 func _onDenied(id, why):
+	if mode == "eat":
+		if eatJob.id == id:
+			eatJob.result = "denied:" + str(why)
+		return
 	if mode == "frac":
 		if claw.id == id:
 			claw.result = "denied:" + str(why)

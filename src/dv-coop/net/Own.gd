@@ -234,10 +234,34 @@ func _on_o_eat(from, msg):
 		return
 	owners.erase(id)
 	var comp = msg.get("c", {})
-	_tombstone(id, comp if comp is Dictionary else {}, str(msg.get("why")))
+	if not comp is Dictionary:
+		comp = {}
+	_eatAudit(id, _rs().nodeOf(id), comp)
+	_tombstone(id, comp, str(msg.get("why")))
 	var node = _rs().untrack(id)
 	if node != null:
 		Tool.remove(node)   # its exit sends r.d to every member that knows it
+
+# Ore audit (gate 10): the composition we handed the owner (our copy never sees its processing) against what it
+# reports at the eat. An MPU only strips filler into reactive mass, so every other key must come back unchanged.
+func _eatAudit(id, node, out):
+	var into = node.getComposition() if node != null and node.has_method("getComposition") else null
+	if into == null:
+		Debug.l("COOP: OWN eat-audit %s in=? out=%s" % [id, out])
+		return
+	var filler = node.get("filler") if node.get("filler") != null else "H2O"
+	var processed = {}
+	var ok = true
+	for k in into:
+		var d = float(into[k]) - float(out.get(k, 0.0))
+		if abs(d) > 0.001:
+			processed[k] = d
+			if k != filler or d < 0:
+				ok = false
+	for k in out:
+		if not into.has(k):
+			ok = false
+	Debug.l("COOP: OWN eat-audit %s in=%s out=%s processed=%s %s" % [id, into, out, processed, "OK" if ok else "BAD"])
 
 # ---------------------------------------------------------------- shards of rocks a member owns (o.new)
 
