@@ -107,6 +107,7 @@ def run_phase(name):
             shutil.copy(f, d)
     saves_ok = _saves_ok(after, name)
     files = glob.glob(os.path.join(run, "*", "dV", "logs", "*.txt"))
+    sys.stdout.flush()   # our lines first, then gate_m5's (it writes straight to the console)
     r = subprocess.run([sys.executable, "tools/gate_m5.py", "--gates", gates] + files, cwd=ga.ROOT)
     if shots:
         ga.log("captures: %s" % shots)
@@ -116,12 +117,14 @@ def run_phase(name):
 def _saves_ok(text, name):
     """savecheck after: only B's slot may differ (the stock pre-dive save), and only in phases where B dives."""
     if "savecheck: PASS" in text:
+        ga.log("save rule PASS: every save byte-identical")
         return True
     changed = re.findall(r"^\s+(\S+\.dv)\s", text, re.M)
     bad = [c for c in changed if not re.search(r"dvcoop_instB[\\/]dV[\\/]savegame-b\.dv$", c) or name == "g3"]
-    if bad:
-        ga.log("savecheck: unexpected save changes %s" % bad)
-    return not bad and bool(changed)
+    ok = not bad and bool(changed)
+    ga.log("save rule %s: %s" % ("PASS" if ok else "FAIL", "unexpected save changes %s" % bad if bad else
+                                 "only B's stock pre-dive save changed" if changed else "savecheck output not understood"))
+    return ok
 
 
 def main(argv):

@@ -26,7 +26,8 @@ extends Node
 #      --coop-dev-dive-friend=<s>[,<name>]  at Enceladus: open the dive picker, pick that friend (else the first), Dive
 #      --coop-dev-solo-pause=<s>,<s2>  in a dive: pause as stock (the menu), and close it s2 seconds into the dive; a
 #                              friend arriving in between turns it into the cell-style menu (gate 8)
-#      --coop-dev-plot-friend=<s>  in a dive: plot a course to the first friend with the stock autopilot burn
+#      --coop-dev-plot-friend=<s>  in a dive: plot a course to the first friend with the stock autopilot burn (turns
+#                              the ship's haul drones off first: they park rocks inside the proximity limit)
 #      --coop-dev-drop=<s>,<d>     in a dive: cut the link for d seconds without a bye, then reconnect
 
 var net = null   # CoopNet
@@ -264,6 +265,14 @@ func _press(key) -> bool:
 		b.emit_signal("pressed")
 	return true
 
+func _haulPlants(n, out):
+	for c in n.get_children():
+		if c.get("droneFunction") == "haul" and c.has_method("scanForTarget"):
+			out.append(c)
+		else:
+			_haulPlants(c, out)
+	return out
+
 func _devTick(delta):
 	# scheduled join requests
 	for inv in invites:
@@ -292,6 +301,12 @@ func _devTick(delta):
 			plotFriendAfter = -1.0
 			var ship = CurrentGame.getPlayerShip()
 			ship.astrogationVelocityMatch = true   # the stock autopilot flies the burn
+			# the dev save's haul drones fetch rocks to the bow, inside the stock 75 m proximity limit, so the burn
+			# can stay suspended for minutes (stock behaviour; a player turns them off): off for the staged course
+			var off = _haulPlants(ship, [])
+			for p in off:
+				p.enabled = false
+			_log("dev: %d haul drone plant(s) turned off for the course" % off.size())
 			plotToFriend(fs[0].id)
 	if soloPauseAt >= 0 and sceneKind == "dive" and sceneClock >= soloPauseAt:
 		soloPauseAt = -1.0
