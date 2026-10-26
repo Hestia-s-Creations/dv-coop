@@ -162,6 +162,9 @@ func _expireTimed(now):
 		if timed[id].empty():
 			timed.erase(id)
 
+func backingOff(node) -> bool:
+	return node != null and node.has_meta("dvnet") and backoff.get(node.get_meta("dvnet"), 0.0) > _now()
+
 func _onTimedDenied(id, why):
 	if timed.has(id):
 		timed.erase(id)
