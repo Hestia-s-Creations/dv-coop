@@ -29,6 +29,10 @@ const ROCK_PREFIX = "res://asteroids/"
 
 var net = null   # CoopNet
 
+signal rock_born(id, node)    # a rock entered the field on this machine (spawned here or built from a recipe)
+signal rock_gone(id, node)    # a rock is leaving the field (despawn, fracture, consumed, pruned)
+signal body_born(id, node)    # any RigidBody2D entered the field (bullets, ships, rocks)
+
 var field = null
 var counter = 0
 var bodies = {}      # id -> node, every body with a net id in the current field
@@ -68,6 +72,8 @@ func _ready():
 	net.on("r.snap", self, "_onSpawn")
 	net.on("r.d", self, "_onDespawn")
 	net.on("r.u", self, "_onUpdate")
+	net.on("r.clk", self, "_onClk")
+	net.on("r.clk2", self, "_onClk2")
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 
@@ -106,6 +112,106 @@ func promoteToAuthority():
 	receivers.clear()
 	role = "authority"
 	Debug.l("COOP: RS promoted to authority, %d rocks now simulated here" % n)
+
+# ---------------------------------------------------------------- clocks (M4: extrapolate from the sender's sample time)
+#
+# Streams (r.u, o.u) carry the sender's wall-clock ms at sampling. Every CLOCK_EVERY s each machine pings the other cell
+# members (r.clk / r.clk2) and keeps, per peer, the offset (their clock - ours) from the lowest-RTT sample of the last
+# CLOCK_KEEP. A stream's sample time in our clock is then ts - offset, so a tracked copy is extrapolated from when the
+# owner sampled it, not from when the packet happened to arrive (M3 known issue: ~6 px at 95 px/s on one PC).
+
+const CLOCK_EVERY = 2.0
+const CLOCK_KEEP = 8
+var clocks = {}      # peer -> [[rtt, offset], ...] newest last
+var clockAccum = 0.0
+
+func _ms() -> int:
+	return OS.get_system_time_msecs()
+
+func clockOffset(peer):
+	var l = clocks.get(peer)
+	if l == null or l.empty():
+		return null
+	var best = l[0]
+	for e in l:
+		if e[0] < best[0]:
+			best = e
+	return best
+
+# A sender's sample time in our wall clock. Without a measured offset, assume half the CoopNet ping ago.
+func localSampleMs(peer, ts) -> int:
+	var now = _ms()
+	if ts == null or int(ts) < 0:
+		return now
+	var b = clockOffset(peer)
+	if b == null:
+		return now - int(max(0, net.stats.rtt_ms) / 2)
+	return int(min(now, int(ts) - b[1]))
+
+func _clockTick(delta, cell):
+	clockAccum += delta
+	if clockAccum < CLOCK_EVERY:
+		return
+	clockAccum = 0.0
+	for p in cell.members():
+		if p != net.myId:
+			net.send(p, {"t": "r.clk", "a": _ms()}, false)
+
+func _onClk(from, msg):
+	net.send(from, {"t": "r.clk2", "a": msg.get("a", 0), "b": _ms()}, false)
+
+func _onClk2(from, msg):
+	var now = _ms()
+	var a = int(msg.get("a", 0))
+	var rtt = now - a
+	if rtt < 0 or rtt > 2000:
+		return
+	var off = int(msg.get("b", 0)) - a - rtt / 2.0
+	if not clocks.has(from):
+		clocks[from] = []
+	clocks[from].append([rtt, off])
+	if clocks[from].size() > CLOCK_KEEP:
+		clocks[from].pop_front()
+
+# ---------------------------------------------------------------- ownership hooks (M4, used by Own.gd)
+
+func nodeOf(id):
+	var n = bodies.get(id)
+	return n if n != null and is_instance_valid(n) else null
+
+func trackedState(id):
+	return tracked.get(id)
+
+# Member won a claim: its tracked copy becomes the simulated body, in place (never rebuilt).
+func untrack(id):
+	var t = tracked.get(id)
+	if t == null:
+		return null
+	tracked.erase(id)
+	if is_instance_valid(t.n):
+		t.n.remove_meta("dvnet_tracked")
+		return t.n
+	return null
+
+# A body this machine no longer owns: correct it toward its owner's stream from now on.
+func track(id, node, p, r, v, w):
+	if node == null or not is_instance_valid(node):
+		return
+	node.set_meta("dvnet_tracked", true)
+	tracked[id] = {"n": node, "p": p, "r": r, "v": v, "w": w, "at": _ms()}
+
+func updateTracked(id, p, r, v, w, at = -1):
+	var t = tracked.get(id)
+	if t != null:
+		t.p = p
+		t.r = r
+		t.v = v
+		t.w = w
+		t.at = at if at >= 0 else _ms()
+
+# Authority: does it currently stream this rock with r.u (i.e. no player owns it)?
+func isStreamed(id) -> bool:
+	return rocks.has(id) and not tracked.has(id)
 
 # ---------------------------------------------------------------- registry
 
@@ -184,14 +290,19 @@ func _onChildEntered(node):
 		id = "%d:%d" % [net.myId, counter]
 		node.set_meta("dvnet", id)
 	bodies[id] = node
-	if isRock(node) and not node.has_meta("dvnet_tracked"):
-		rocks[id] = node
-		fresh.append(id)
+	emit_signal("body_born", id, node)
+	if isRock(node):
+		emit_signal("rock_born", id, node)
+		if not node.has_meta("dvnet_tracked"):
+			rocks[id] = node
+			fresh.append(id)
 
 func _onChildExiting(node):
 	if not node.has_meta("dvnet"):
 		return
 	var id = node.get_meta("dvnet")
+	if isRock(node):
+		emit_signal("rock_gone", id, node)
 	bodies.erase(id)
 	tracked.erase(id)
 	if rocks.has(id):
@@ -217,15 +328,22 @@ static func _isNum(x) -> bool:
 static func _validRecipe(rc) -> bool:
 	return rc is Array and rc.size() == 11 and rc[0] is String and rc[1] is String and _isNum(rc[2]) 		and rc[3] is Vector2 and _isNum(rc[4]) and rc[5] is Vector2 and _isNum(rc[6]) and _isNum(rc[7]) 		and _isNum(rc[8]) and _isNum(rc[9]) and _isNum(rc[10])
 
-func _build(rc):
+# Authority: build a rock a member created (fracture shards, o.new) as one we simulate and stream.
+func buildSimulated(rc):
+	if not _validRecipe(rc) or bodies.has(rc[0]):
+		return null
+	return _build(rc, false)
+
+func _build(rc, asTracked = true):
 	var id = rc[0]
 	var kind = rc[1]
 	if not scenes.has(kind):
 		Debug.l("COOP: RS dropped recipe %s: kind %s is not a spawner rock scene" % [id, kind])
-		return
+		return null
 	var n = scenes[kind].instance()
 	n.set_meta("dvnet", id)
-	n.set_meta("dvnet_tracked", true)
+	if asTracked:
+		n.set_meta("dvnet_tracked", true)
 	n.position = rc[3]
 	n.rotation = rc[4]
 	n.asteroidClass = int(rc[7])
@@ -242,7 +360,22 @@ func _build(rc):
 		_logMineral("built", id, n)
 	else:
 		n.rnd = rc[8]
-	tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": OS.get_ticks_msec()}
+	if asTracked:
+		tracked[id] = {"n": n, "p": rc[3], "r": rc[4], "v": rc[5], "w": rc[6], "at": _ms()}
+	return n
+
+func recipeOf(id):
+	var n = nodeOf(id)
+	return _recipe(id, n) if n != null else null
+
+# Member: a rock born here (a fracture shard) is handed to the authority; from now on it is a tracked copy.
+func handOver(id):
+	var n = nodeOf(id)
+	if n == null:
+		return
+	rocks.erase(id)
+	fresh.erase(id)
+	track(id, n, n.global_position, n.global_rotation, n.linear_velocity, n.angular_velocity)
 
 var mineralsLogged = {}
 func _logMineral(what, id, n):
@@ -289,6 +422,8 @@ func _physics_process(delta):
 	if want != role:
 		_changeRole(role, want)
 
+	if role != "solo":
+		_clockTick(delta, cell)
 	match role:
 		"authority":
 			_authorityTick(delta, cell)
@@ -420,6 +555,7 @@ func _authorityTick(delta, cell):
 			_sendUpdates(peer, rv, at, near, far, g)
 	fresh.clear()
 	gone.clear()
+	_correct()
 
 # Would this rock, built on the member's machine, sit inside or against that member's ship? Its ship is the puppet
 # here. Same shape query as the stock spawner's placement test, with a margin for the puppet's lag. A deferred rock
@@ -472,8 +608,8 @@ func _sendUpdates(peer, rv, at, near, far, g):
 	var f = PoolRealArray()
 	for id in rv.known:
 		var node = rocks.get(id)
-		if node == null:
-			continue
+		if node == null or node.has_meta("dvnet_tracked"):
+			continue   # gone, or owned by a player who streams it with o.u
 		var d = node.global_position.distance_to(at)
 		if not ((near and d < NEAR) or (far and d >= NEAR)):
 			continue
@@ -488,12 +624,12 @@ func _sendUpdates(peer, rv, at, near, far, g):
 		ids.append(id)
 		f.append_array([p.x, p.y, node.global_rotation, v.x, v.y, node.angular_velocity])
 		if ids.size() >= BATCH:
-			_out(peer, {"t": "r.u", "g": g, "i": ids, "f": f}, false)
+			_out(peer, {"t": "r.u", "g": g, "ts": _ms(), "i": ids, "f": f}, false)
 			sent.u += ids.size()
 			ids = PoolStringArray()
 			f = PoolRealArray()
 	if ids.size() > 0:
-		_out(peer, {"t": "r.u", "g": g, "i": ids, "f": f}, false)
+		_out(peer, {"t": "r.u", "g": g, "ts": _ms(), "i": ids, "f": f}, false)
 		sent.u += ids.size()
 
 func _out(peer, msg, reliable):
@@ -532,7 +668,7 @@ func _onSpawn(from, msg):
 			t.r = rc[4]
 			t.v = rc[5]
 			t.w = rc[6]
-			t.at = OS.get_ticks_msec()
+			t.at = _ms()
 		elif not bodies.has(id):
 			_build(rc)
 	if msg.get("last", false) and snapSeen != null:
@@ -570,7 +706,7 @@ func _onUpdate(from, msg):
 	var f = msg.get("f")
 	if not (ids is PoolStringArray and f is PoolRealArray and f.size() == ids.size() * 6):
 		return
-	var now = OS.get_ticks_msec()
+	var now = localSampleMs(from, msg.get("ts", -1))
 	var i = 0
 	for id in ids:
 		if tracked.has(id):
@@ -598,11 +734,16 @@ func _memberTick(delta, cell):
 			else:
 				_onSpawn(h[0], h[1])
 		replaying = false
-	var now = OS.get_ticks_msec()
+	_correct()
+
+# Pull every tracked copy toward its owner's last reported state. Members track the authority's rocks; the authority
+# tracks rocks a player owns (M4). A copy whose claim is pending here (Own sets `hold`) is left alone.
+func _correct():
+	var now = _ms()
 	for id in tracked:
 		var t = tracked[id]
 		var n = t.n
-		if not is_instance_valid(n):
+		if not is_instance_valid(n) or t.get("hold", false):
 			continue
 		var age = (now - t.at) / 1000.0
 		if age > MAX_EXTRAPOLATION:

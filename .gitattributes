@@ -1,3 +1,4 @@
 # Same bytes on every OS, so file hashes and the built zip match everywhere.
 * text=auto eol=lf
 *.pdf binary
+MANIFEST.sha256 merge=ours

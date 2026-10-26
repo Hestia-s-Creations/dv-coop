@@ -32,7 +32,8 @@ const RANGE_PUPPET_DROP = 45000.0
 const BEACON_TIMEOUT = 6.0
 const GAME_SCENE = "res://Game.tscn"
 const DEV_DIVE_TARGET = Vector2(15000, 12345678)
-const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd"]
+# Child modules, in order. Missing files are skipped, so a module can land on its own branch first.
+const MODULES = ["res://dv-coop/net/Cell.gd", "res://dv-coop/net/RockSync.gd", "res://dv-coop/net/Own.gd", "res://dv-coop/net/Npc.gd", "res://dv-coop/net/DevBot.gd"]
 
 enum Transport { NONE, STEAM, ENET }
 
@@ -74,6 +75,8 @@ var handlers = {}
 
 func _ready():
 	for path in MODULES:
+		if not ResourceLoader.exists(path):
+			continue
 		var m = load(path).new()
 		m.net = self
 		add_child(m)
@@ -385,6 +388,8 @@ func _recv(from, msg: Dictionary):
 			if pp != null:
 				pp.netSchedule = msg.s
 		"state":
+			if peers.has(from):
+				peers[from].state = {"p": msg.p, "r": msg.r, "v": msg.v, "w": msg.w, "at": OS.get_ticks_msec()}
 			var pp = _puppetOf(from)
 			if pp != null:
 				pp.netState = {"p": msg.p, "r": msg.r, "v": msg.v, "w": msg.w, "at": OS.get_ticks_msec()}
@@ -438,6 +443,7 @@ func _sendBeacon():
 		b.r = localShip.global_rotation
 		b.ship = localShip.get("shipName")
 		b.tr = localShip.get("transponder")
+		b.kind = "ship" if "shipConfig" in localShip else "pod"   # after a ship dies the player flies its lifepod
 	_broadcast(b, false)
 
 func _sessionTick(delta):
@@ -461,6 +467,15 @@ func _sessionTick(delta):
 		for id in peers.keys():
 			_despawnPuppet(id, "left dive")
 		_sendBeacon()
+
+	# --- our ship died: the game hands the player its lifepod (or a rescue ship); follow it
+	if dived and (localShip == null or not is_instance_valid(localShip) or localShip.get("dead") == true):
+		var next = CurrentGame.getPlayerShip()
+		if next != null and is_instance_valid(next) and next != localShip and next.is_inside_tree():
+			Debug.l("COOP: local ship is now '%s' (%s)" % [next.name, "ship" if "shipConfig" in next else "pod"])
+			localShip = next
+			lastIntent = null
+			_sendBeacon()
 
 	# --- dev auto-dive: everyone dives on their own, same target (+ offset)
 	if autoDive and not autoDiveStarted and _atTitle() and peers.size() > 0:
@@ -494,7 +509,10 @@ func _sessionTick(delta):
 			if not pr.inRange:
 				pr.inRange = true
 				Debug.l("COOP: %s (%s) entered range at %.0f px" % [id, pr.name, dist])
-			if pr.cfg == null:
+			if pr.beacon.get("kind", "ship") != "ship":
+				# a lifepod is not a ship-ctrl ship; Npc.gd mirrors it from peers[id].state
+				_despawnPuppet(id, "flying a lifepod")
+			elif pr.cfg == null:
 				if not pr.has("cfgAskedAt") or now - pr.cfgAskedAt > 2.0:
 					pr.cfgAskedAt = now
 					_send(id, {"t": "shipreq"}, true)
