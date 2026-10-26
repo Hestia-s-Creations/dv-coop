@@ -222,10 +222,29 @@ func _shipLog():
 			_leak(ship), impacts, impactMax])
 
 # Is the spot a teleport would put the ship on free of other bodies? Landing on a rock is an impact (see DRAIN_KG_S).
-# A blocked target is passed over for SPOT_RETRY s.
+# A blocked target is passed over for SPOT_RETRY s. Other players' ships (their puppets here) must also be SHIP_APART
+# px away: run 084817, B and C reached for the same rock in the same second and teleported onto each other (impacts of
+# 665k and 571k, both reactors cracked); a puppet lags its ship, so the margin is wide. Rocks nearer another player's
+# ship than ours are theirs to pick (_theirs), so two bots never reach for one rock.
 const SPOT_RADIUS = 250.0
 const SPOT_RETRY = 5.0
+const SHIP_APART = 700.0
 var spotBlocked = {}   # id -> s until it may be picked again
+
+func _otherShips() -> Array:
+	var out = []
+	for p in net.peers.values():
+		var s = p.get("puppet")
+		if s != null and is_instance_valid(s) and s is Node2D:
+			out.append(s)
+	return out
+
+func _theirs(ship, n) -> bool:
+	var d = n.global_position.distance_to(ship.global_position)
+	for s in _otherShips():
+		if n.global_position.distance_to(s.global_position) < d:
+			return true
+	return false
 
 func _spotClear(ship, pos, id, rock) -> bool:
 	var now = _secs()
@@ -242,6 +261,11 @@ func _spotClear(ship, pos, id, rock) -> bool:
 		if ship.get(k) is Array:
 			ex += ship.get(k)
 	q.exclude = ex
+	for s in _otherShips():
+		if s.global_position.distance_to(pos) < SHIP_APART:
+			spotBlocked[id] = now + SPOT_RETRY
+			Debug.l("COOP: BOT teleport for id=%s too near %s's ship, passed over %.0f s" % [id, s.name, SPOT_RETRY])
+			return false
 	for h in ship.get_world_2d().direct_space_state.intersect_shape(q, 16):
 		var o = h.get("collider")
 		if o != null and is_instance_valid(o) and not ex.has(o) and not ship.is_a_parent_of(o):
@@ -998,13 +1022,13 @@ func _seedMinerals(ship, now):
 				or n.get("fracturing") == true or own.owners.has(id):
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if d < BOT_REACH and (best == "" or d < bestD) and spotBlocked.get(id, 0.0) <= now:
+		if d < BOT_REACH and (best == "" or d < bestD) and spotBlocked.get(id, 0.0) <= now and not _theirs(ship, n):
 			best = id
 			bestD = d
 	if best == "":
 		return
 	var rock = rs.nodeOf(best)
-	if bestD > SEED_NEAR * 1.5:
+	if bestD > SEED_NEAR * 1.5 or bestD < SEED_NEAR * 0.75:   # the fracture is obliterating: never from close by
 		var away = (ship.global_position - rock.global_position).normalized()
 		if not _spotClear(ship, rock.global_position + away * SEED_NEAR, best, rock):
 			return
@@ -1425,7 +1449,7 @@ func _pickClawRock(ship) -> String:
 		if bestFinal and not isFinal:
 			continue
 		var d = n.global_position.distance_to(ship.global_position)
-		if d > BOT_REACH or spotBlocked.get(id, 0.0) > _secs():
+		if d > BOT_REACH or spotBlocked.get(id, 0.0) > _secs() or _theirs(ship, n):
 			continue
 		if best == "" or d < bestD or (isFinal and not bestFinal):
 			best = id
