@@ -33,7 +33,7 @@ const DIVE_LEAD = 15.0       # s: the dive cutscene, over which the friend keeps
 const DIVE_SIDE = Vector2(0, 20000)   # arrive 2 km beside the friend, not on top of them
 const JUMP_LEAD = 1.5        # s: from the jump to the end of the fast-travel cutscene
 
-var scene = null             # instance id of Loader.current
+var scene = 0                # instance id of Loader.current
 var sceneKind = ""           # title, station, dive (after its cutscene), or "" while loading / in a cutscene
 var sceneClock = 0.0
 
