@@ -265,8 +265,16 @@ func _refresh():
 # stock menu column (if that is showing), and no control smaller than it needs (clipped text).
 var layoutDue = 0   # frames until the next layout report (no yields: the panel can leave the tree with its scene)
 
+var devLayout = null   # dev only: layout reports run with the --coop-dev-ui driver
+
 func _reportLayoutLater():
-	layoutDue = 3
+	if devLayout == null:
+		devLayout = false
+		for arg in OS.get_cmdline_args():
+			if arg.begins_with("--coop-dev-ui"):
+				devLayout = true
+	if devLayout:
+		layoutDue = 3
 
 func layoutReport() -> String:
 	var r = get_global_rect()
