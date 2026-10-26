@@ -382,8 +382,9 @@ func _devPauseTick(delta):
 			var up = InputEventAction.new()
 			up.action = "pause"
 			up.pressed = false
-			Input.parse_input_event(up)
-			Settings.focused = pauseWasFocused
+			_pauseProbe()
+			pauseProbe.send.append(up)
+			pauseProbe.restoreFocus = pauseWasFocused
 			var pm = net._gameScene().get_node_or_null("PauseMenu") if net._gameScene() != null else null
 			_log("dev pause key released; tree paused=%s menu=%s" % [get_tree().paused,
 				pm.get_node("PauseContainer").visible if pm != null else "-"])
@@ -425,10 +426,9 @@ func _devPauseTick(delta):
 						ev.scancode = e.scancode
 						break
 			ev.pressed = true
-			Input.parse_input_event(ev)
-			_log("dev pause probe: sent %s; focused was %s; right after parse: pressed=%s just=%s; in physics %s" % [
-				ev.as_text(), pauseWasFocused, Input.is_action_pressed("pause"), Input.is_action_just_pressed("pause"),
-				Engine.is_in_physics_frame()])
+			# sent from the probe's idle _process: an event parsed inside a physics frame is dispatched there, where
+			# is_action_just_pressed is still false, so the stock handler ignores it; a player's key arrives outside it
+			pauseProbe.send.append(ev)
 			pauseProbeFrames = 3
 			pauseKeyUp = pauseClock + 0.15
 		4:
