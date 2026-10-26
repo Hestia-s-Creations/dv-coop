@@ -174,10 +174,13 @@ func _physics_process(delta):
 		_setGhost(now)
 		_log("dev: authority flip: treating live authority %s as gone" % auth)
 		viewAccum = 1.0
-	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - heardAt.get(auth, now) > AUTH_SILENT:
+	# any packet from the authority counts (rock updates, beacons, o.*): during a join burst its unreliable c.hb can
+	# sit behind the snapshot for over AUTH_SILENT while everything else still arrives (docs/M5.md, K1)
+	var lastAuth = max(heardAt.get(auth, now), net.heardFrom.get(auth, 0.0))
+	if role == Role.MEMBER and mergeTo == 0 and not lost.has(auth) and now - lastAuth > AUTH_SILENT:
 		lost[auth] = now
 		_setGhost(now)
-		_log("authority %s silent %.1f s, treating as gone" % [auth, now - heardAt.get(auth, now)])
+		_log("authority %s silent %.1f s, treating as gone" % [auth, now - lastAuth])
 		viewAccum = 1.0
 
 	viewAccum += delta
