@@ -13,7 +13,7 @@ Python 3.8+ standard library only, no game install needed. It works on a git clo
   3. The mod's scripts call nothing that runs programs, opens web pages, reads or writes files, or opens any
      connection other than the Steam lobby and the ENet dev transport. Everything the mod does reach outside
      the game for is printed so you can read it.
-  4. The mod zip built from src/ by tools/build.py, and its SHA-256, so a downloaded dv-coop.zip can be compared.
+  4. The mod zips built from src/ by tools/build.py (dev and --release), and their SHA-256, so a downloaded zip can be compared.
 """
 import sys, re, hashlib, pathlib, tempfile, subprocess
 
@@ -133,9 +133,11 @@ def main():
     sys.path.insert(0, str(ROOT / "tools"))
     import build
     with tempfile.TemporaryDirectory() as tmp:
-        out = pathlib.Path(tmp) / "dv-coop.zip"
-        count = build.build(out)
-        print(f"   dv-coop.zip from src/: {count} files, sha256 {hashlib.sha256(out.read_bytes()).hexdigest()}")
+        for release in (False, True):   # the dev zip, and the release zip without dev-only code (tools/build.py)
+            name = "dv-coop-release.zip" if release else "dv-coop.zip"
+            out = pathlib.Path(tmp) / name
+            count = build.build(out, release)
+            print(f"   {name} from src/: {count} files, sha256 {hashlib.sha256(out.read_bytes()).hexdigest()}")
 
     print()
     if fails:
