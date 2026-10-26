@@ -76,7 +76,15 @@ def strip_dev(name, text):
     if inside:
         problems.append(f"{name}:{inside[0]}: {DEV_BEGIN} never closed")
     # a block header (if/for/func/...) whose whole body was blanked no longer parses
-    code = [(n, l) for n, l in enumerate(out, 1) if l.strip() and not l.strip().startswith("#")]
+    # (a statement continued with a trailing backslash counts as one line at the indent of its first line)
+    code = []
+    for n, l in enumerate(out, 1):
+        if not l.strip() or l.strip().startswith("#"):
+            continue
+        if code and code[-1][1].split("#", 1)[0].rstrip().endswith("\\"):
+            code[-1] = (code[-1][0], code[-1][1].split("#", 1)[0].rstrip()[:-1] + " " + l.strip())
+        else:
+            code.append((n, l))
     for (n, l), nxt in zip(code, code[1:] + [(None, "")]):
         if l.split("#", 1)[0].rstrip().endswith(":"):
             ind = len(l) - len(l.lstrip())
