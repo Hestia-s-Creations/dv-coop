@@ -1,6 +1,6 @@
 """Zip src/dv-coop into a mod zip and copy it into the game's mods/ folder.
 
-Usage: python tools/build.py [--release] [--no-install]
+Usage: python tools/build.py [--release] [--strict] [--no-install]
 
   (default)   build/dv-coop.zip, everything in src/ (dev flags, DevBot, diagnostics)
   --release   build/dv-coop-release.zip, the zip for players: dev-only files left out and dev-only blocks blanked
@@ -18,10 +18,14 @@ Dev-only code in release builds:
   - any "--coop-dev-" flag or DVCOOP_ variable left outside a block is listed as a warning, and so is a direct
     load("res://...") of a DEV_ONLY file; --strict fails on them.
 
+Installing is refused while another session holds the dev game lock (DV_LOCK, default ~/.dvcoop-gamelock, taken by
+dev2/dev3 and released by tools/stop.sh): replacing mods/dv-coop.zip under running instances corrupts their run. The
+holder is matched against DV_WHO (or, as tools/dvenv.sh does without it, the repo folder). Unknown flags are an error.
+
 The game folder comes from DV_GAME if set, otherwise the first Steam install found:
 Windows Steam, then the Flatpak Steam and native Steam libraries on Linux.
 """
-import os, re, sys, zipfile, shutil, pathlib, hashlib
+import os, re, sys, zipfile, shutil, pathlib, hashlib, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
@@ -137,8 +141,58 @@ def build(out, release=False):
     build.report = report
     return len(files)
 
+FLAGS = {"--release", "--strict", "--no-install"}
+
+def lock_holder():
+    """Who holds the dev game lock, or None. A lock we hold ourselves counts as free."""
+    lock = pathlib.Path(os.environ.get("DV_LOCK") or (HOME / ".dvcoop-gamelock"))
+    owner = lock / "owner"
+    if not lock.is_dir():
+        return None
+    try:
+        holder = owner.read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        return "unknown (lock folder without an owner file)"
+    me = os.environ.get("DV_WHO")
+    if me and holder == me:
+        return None
+    # dvenv.sh writes $(pwd) when DV_WHO is unset: /c/Users/... in Git Bash
+    p = holder
+    if len(p) > 2 and p[0] == "/" and p[2] == "/":
+        p = p[1] + ":" + p[2:]
+    try:
+        if pathlib.Path(p).resolve() == ROOT:
+            return None
+    except OSError:
+        pass
+    return holder
+
+def lock_held_by_me():
+    lock = pathlib.Path(os.environ.get("DV_LOCK") or (HOME / ".dvcoop-gamelock"))
+    return lock.is_dir() and lock_holder() is None
+
+def game_running():
+    """True if any Delta-V process is running (Windows tasklist, else pgrep)."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Delta-V.exe", "/NH"], capture_output=True, text=True).stdout
+            return "Delta-V.exe" in out
+        return subprocess.run(["pgrep", "-f", "Delta-V"], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
 def install(zip_path):
-    mods = find_game() / "mods"
+    me = os.environ.get("DV_WHO") or "unset DV_WHO"
+    game = find_game()
+    shared = any(game.resolve() == c.resolve() for c in CANDIDATES if c.exists())
+    holder = lock_holder() if shared else None   # a private copy (sandbox.sh's DV_GAME) isn't the locked install
+    if holder:
+        sys.exit(f"not installing: the game is held by {holder} (you are {me}). The zip is built at {zip_path}; "
+                 f"wait for their run to end, or set DV_WHO if the lock is yours. --no-install builds are always allowed.")
+    if shared and game_running() and not lock_held_by_me():
+        sys.exit(f"not installing: Delta-V is running and you ({me}) don't hold the game lock. The zip is built at {zip_path}; "
+                 f"take the lock (tools/dvenv.sh dv_lock) or close the game first.")
+    mods = game / "mods"
     mods.mkdir(exist_ok=True)
     for old in mods.glob("dv-coop*.zip"):
         if old.name != INSTALL_NAME:
@@ -149,6 +203,13 @@ def install(zip_path):
     print(f"installed {zip_path.name} -> {dst}")
 
 def main():
+    args = sys.argv[1:]
+    if any(a in ("-h", "--help") for a in args):
+        print(__doc__)
+        return
+    unknown = [a for a in args if a not in FLAGS]
+    if unknown:
+        sys.exit("unknown option(s): %s\nusage: python tools/build.py [--release] [--strict] [--no-install]" % " ".join(unknown))
     release = "--release" in sys.argv
     out = OUT_RELEASE if release else OUT
     out.parent.mkdir(exist_ok=True)
