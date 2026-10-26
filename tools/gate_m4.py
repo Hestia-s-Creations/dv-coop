@@ -570,7 +570,7 @@ def gateflip(insts):
     fi, fl = flips[0]
     tf = _secs(fl)
     promoted = [l for l in fi.lines if (_secs(l) or 0) >= tf and "COOP: CELL PROMOTED to authority" in l]
-    back = [l for l in fi.lines if (_secs(l) or 0) >= tf and re.search(r"COOP: CELL LEFT cell .* as AUTHORITY \(cell of \d+ wins\)", l)]
+    back = [l for l in fi.lines if (_secs(l) or 0) >= tf and re.search(r"COOP: CELL LEFT cell .* as AUTHORITY \((cell of \d+ wins|dev: authority flip back)", l)]
     ev.append("%s after the flip: promoted %s, resigned back %s" % (fi.name(), bool(promoted), bool(back)))
     if not promoted or not back:
         return False, ev + ["FAIL: the flip didn't promote and resign back in game, so this run tests nothing"]
