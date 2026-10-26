@@ -5,6 +5,7 @@
 set -e
 cd "$(dirname "$0")/.."
 . tools/dvenv.sh
+dv_lock
 C="$DV_INST/dvcoop_instC"
 SLOT="${1:-savegame.dv}"
 

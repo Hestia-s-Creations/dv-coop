@@ -8,8 +8,14 @@ const MOD_PRIORITY = 0
 const MOD_VERSION = "0.0.1-m0"
 const GAME_BUILD_EXPECTED = "1.90.12"
 
+# Order matters: asteroid.gd before AsteroidSpawner.gd, which preloads the asteroid scenes that use asteroid.gd.
+# Missing files are skipped, so each module's extension can land on its own branch first.
 const EXTENSIONS = [
+	"res://dv-coop/ext/asteroid.gd",
+	"res://dv-coop/ext/AsteroidSpawner.gd",
 	"res://dv-coop/ext/ship-ctrl.gd",
+	"res://dv-coop/ext/CurrentGame.gd",
+	"res://dv-coop/ext/BulletTimer.gd",
 ]
 
 var modLoader = null
@@ -22,6 +28,8 @@ func _init(loader = null):
 	# get a chance to load the original scripts.
 	if modLoader and modLoader.has_method("installScriptExtension"):
 		for ext in EXTENSIONS:
+			if not ResourceLoader.exists(ext):
+				continue
 			modLoader.installScriptExtension(ext)
 			Debug.l("COOP: installed extension %s" % ext)
 	else:
@@ -29,6 +37,9 @@ func _init(loader = null):
 
 func _ready():
 	name = "DvCoop"
+	# The game pauses the whole tree on focus loss, the pause key and the Steam overlay. Our networking must keep
+	# running through that, or one player alt-tabbing drops out of the cell after 1.5 s (children inherit this).
+	pause_mode = Node.PAUSE_MODE_PROCESS
 	if "--coop-selftest" in OS.get_cmdline_args():
 		selfTest = true
 	var net = load("res://dv-coop/net/CoopNet.gd").new()

@@ -22,8 +22,10 @@ export var netSnapAngle = 0.6
 export var netCorrectionGain = 4.0
 export var netMaxExtrapolation = 0.25
 
+# Godot 3 calls _ready, _process and _physics_process on every level of a script chain by itself (base first
+# for _ready, derived first for _process). Never call them with a leading dot here: until 2026-10-25 this file
+# did, and stock ship-ctrl ran its _ready and _process twice per frame on every ship (measured: 2.0 -> 1.0 runs).
 func _ready():
-	._ready()
 	Debug.l("COOP: ship-ctrl extension active on '%s' (playerControlled=%s ai=%s net=%s)" % [name, playerControlled, ai, netControlled])
 
 func _coopNet():
@@ -36,7 +38,6 @@ func _process(delta):
 		autopilot = false
 		if netSchedule != null:
 			thrusterShedule = netSchedule.duplicate(true)
-	._process(delta)
 
 func executeThrusterFire(solve: bool, delta: float):
 	if playerControlled and not netControlled:
@@ -46,6 +47,10 @@ func executeThrusterFire(solve: bool, delta: float):
 	.executeThrusterFire(solve, delta)
 
 func _integrate_forces(state):
+	if netControlled:
+		# Our corrections are not forces the ship felt: keep the stock acceleration-shock damage
+		# (damageAcceleration -> reactor stress) at zero on puppets.
+		initialShockSupress = 1.0
 	if netControlled and netState != null:
 		var age = clamp((OS.get_ticks_msec() - netState.at) / 1000.0, 0.0, netMaxExtrapolation)
 		var target = CurrentGame.localCoords(netState.p) + netState.v * age
@@ -60,3 +65,29 @@ func _integrate_forces(state):
 			state.linear_velocity = netState.v + err * netCorrectionGain
 			state.angular_velocity = netState.w + rerr * netCorrectionGain
 	._integrate_forces(state)
+
+# A puppet is a picture of another player's ship. Its owner's machine decides what damages it, so locally it
+# takes no damage, and it must never vanish: the stock vanish() erases the transponder from OUR save
+# (CurrentGame.forgetTransponser), may remove a ship from our garage, and spawns a lifepod. Only CoopNet
+# frees a puppet. Ship damage and destruction get replicated from the owner in M4.
+
+func applyKineticDamage(energy, point, delta = null):
+	if netControlled:
+		return
+	.applyKineticDamage(energy, point, delta)
+
+func applyEnergyDamage(energy, point, delta):
+	if netControlled:
+		return energy   # absorbed, so beams still stop at the hull
+	return .applyEnergyDamage(energy, point, delta)
+
+func applyEmpDamage(energy, point, delta):
+	if netControlled:
+		return
+	.applyEmpDamage(energy, point, delta)
+
+func vanish(except = []):
+	if netControlled:
+		Debug.l("COOP: blocked vanish() on puppet '%s'" % name)
+		return
+	.vanish(except)

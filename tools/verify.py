@@ -39,7 +39,7 @@ DECLARED = [
     (r"\bOS\.get_environment\(\"?\w*\"?\)", "reads an environment variable"),
     (r"\bOS\.get_cmdline_args\b", "reads the game's launch options"),
     (r"\"user://[^\"]*", "the game's own save folder"),
-    (r"\b(pre)?load\(\"[^\"]+\"", "loads a script"),
+    (r"\b(pre)?load\(\"[^\"]+\"", "loads a script or resource from the game or the mod"),
 ]
 
 def repo_files():

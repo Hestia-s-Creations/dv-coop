@@ -3,7 +3,8 @@
 A work-in-progress co-op mod for ΔV: Rings of Saturn: up to five players, each playing their own game,
 sharing the same rocks whenever they fly near each other. Built for the Steam release (build 1.90.12, Godot 3.6 + GodotSteam).
 
-**It is not playable yet.** Ships fly together, but asteroids are not shared yet. See Status below.
+**It is not playable yet.** Ships fly together and nearby players share the same asteroids, but mining together,
+combat and the in-game join menu are still to come. See Status below.
 
 - Design spec: [docs/SPEC.md](docs/SPEC.md) ([PDF](docs/SPEC.pdf))
 - Check what's in this repo: [Verify it yourself](#verify-it-yourself)
@@ -31,20 +32,32 @@ sharing the same rocks whenever they fly near each other. Built for the Steam re
   star with server relay for dev, beacons, range-based puppets (spawn under 40,000 px, drop past 45,000),
   and a friend-marker overlay (chevron at the screen edge, name, distance) that works at any distance.
   Out-of-range peers cost about 1 kB/s.
-- Not yet proven: Steam P2P packets between two different Steam accounts (needs a second person);
-  10 minutes of hand-flown formation with no rubber-banding (needs a pilot).
+- **M3 shared rocks (2026-10-25): working on one PC with up to three players.** Players within 40,000 px form a
+  *cell*; one of them (the incumbent, see the spec) simulates the asteroids and streams them to the others, who
+  adopt its coordinate origin exactly (0 px jump) and suspend their own spawner. Measured: slow rocks agree within
+  0.2 px, rocks moving ~95 px/s trail by ~6 px; authority upload ~16 kB/s with two members. A player can warp in,
+  join, and the cell survives its authority quitting (handoff under 1 s) or crashing (1.5 s). Puppets of other
+  players' ships take no local damage and never touch your save. Checked at six resolutions from 1280x720 to
+  3440x1440 and at the game's UI-scale extremes. Details: [docs/M3.md](docs/M3.md).
+- Not yet proven: Steam P2P between two different Steam accounts and networks; a human flying into a cell
+  (all M3 testing used dev flags on one PC); HiDPI laptops and Windows display scaling above 100%.
 
 ## Layout
 
 ```
 src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop/...
   modmain.gd            ModLoader entry: installs script extensions, attaches CoopNet
-  net/CoopNet.gd        Steam lobby + P2P transport, ENet fallback, ping/pong
-  ext/ship-ctrl.gd      extends res://ships/ship-ctrl.gd (netControlled mode, intent capture, correction)
+  net/CoopNet.gd        Steam lobby + P2P transport, ENet fallback, ping/pong, puppets, module hooks
+  net/Cell.gd           which players share a world, who simulates it, origin adoption, handoff
+  net/RockSync.gd       asteroid net ids, recipes and streaming from the cell authority
+  ext/ship-ctrl.gd      extends res://ships/ship-ctrl.gd (netControlled mode, intent capture, correction, puppet safety)
+  ext/asteroid.gd       tracked rocks only break on the machine that simulates them
+  ext/AsteroidSpawner.gd  never despawns tracked rocks or puppets; members don't slipstream
   ui/FriendOverlay.gd   friend markers drawn from beacons
 tools/build.py          zips src/ -> build/dv-coop.zip (reproducible, prints its SHA-256) and copies it into <game>/mods/
 tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
+tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
 llms.txt                setup instructions for AI agents
 tools/dvenv.sh          game, data and launcher paths for the dev loops (Windows Git Bash or Linux)
