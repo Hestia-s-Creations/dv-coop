@@ -58,15 +58,24 @@ def gate1(logs):
 
 
 def gate2(logs):
-    """Panel layout: every captured panel lies inside its viewport"""
+    """Panel layout: every panel state shown is inside the viewport, clear of the stock menu, with no clipped text"""
     ev, ok = [], True
-    caps = [(i, l) for i in logs for l in i.lines if "COOP: TRAVEL UI capture:" in l]
-    if not caps:
-        return False, ["FAIL: no captures (use --coop-dev-ui=...:capture)"]
-    for i, l in caps:
-        inside = "inside True" in l
-        ok = ok and inside
-        ev.append("%s: %s" % (i.name(), l.split("UI capture:")[1].strip()))
+    lays = [(i, l) for i in logs for l in i.lines if "COOP: UI layout " in l]
+    if not lays:
+        return False, ["FAIL: no layout reports (open the co-op panel: --coop-dev-ui=...:coop)"]
+    seen = {}
+    for i, l in lays:
+        body = l.split("COOP: UI layout ")[1]
+        good = "inside True" in body and "overlaps menu False" in body and "clipped 0 " in body
+        ok = ok and good
+        m = re.search(r"window \((\d+), (\d+)\), ui ([\d.]+)", body)
+        key = (i.name(), body.split(":")[0], m.groups() if m else "?")
+        seen.setdefault(key, [0, 0])
+        seen[key][0 if good else 1] += 1
+        if not good:
+            ev.append("FAIL %s: %s" % (i.name(), body[:300]))
+    for (n, where, win), (g, b) in sorted(seen.items()):
+        ev.append("%s %s window %s: %d layout(s) ok, %d bad" % (n, where, "x".join(win[:2]) + " ui " + win[2] if win != "?" else "?", g, b))
     return ok, ev
 
 

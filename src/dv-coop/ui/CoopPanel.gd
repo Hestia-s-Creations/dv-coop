@@ -252,6 +252,56 @@ func _refresh():
 	var first = buttons.get("yes", buttons.get("host", buttons.get("invite", buttons.get("close"))))
 	if first != null and not first.disabled:
 		first.call_deferred("grab_focus")
+	_reportLayoutLater()
+
+# ---------------------------------------------------------------- layout check (M5 gate 2)
+
+# After each rebuild, once the containers have sorted, log whether the panel fits: inside the viewport, clear of the
+# stock menu column (if that is showing), and no control smaller than it needs (clipped text).
+var layoutSeq = 0
+
+func _reportLayoutLater():
+	layoutSeq += 1
+	var seq = layoutSeq
+	for i in range(3):
+		yield(get_tree(), "idle_frame")
+	if seq == layoutSeq and visible:
+		Debug.l("COOP: UI layout %s" % layoutReport())
+
+func layoutReport() -> String:
+	var r = get_global_rect()
+	var vp = get_viewport().get_visible_rect()
+	var inside = vp.grow(1).encloses(r)
+	var overlap = false
+	if cover != null and is_instance_valid(cover) and cover.is_visible_in_tree():
+		for c in _controls(cover):
+			if c is BaseButton and c.is_visible_in_tree() and c.get_global_rect().intersects(r):
+				overlap = true
+	var clipped = []
+	for c in _controls(self):
+		if not c.is_visible_in_tree():
+			continue
+		var need = c.get_combined_minimum_size()
+		var cr = c.get_global_rect()
+		var why = ""
+		if cr.size.x + 0.5 < need.x or cr.size.y + 0.5 < need.y:
+			why = "smaller than its minimum"
+		elif not r.grow(1).encloses(cr):
+			why = "outside the panel"
+		elif c is Label and c.autowrap and c.get_visible_line_count() < c.get_line_count():
+			why = "lines cut"
+		if why != "":
+			clipped.append("%s '%s' %s" % [c.get_class(), str(c.get("text")).left(24), why])
+	return "%s: panel %s in viewport %s, inside %s, overlaps menu %s, clipped %d %s, window %s, ui %s" % [
+		"title" if atTitle else "pause", r, vp, inside, overlap, clipped.size(), clipped, OS.window_size, Settings.cfg.ui.scale]
+
+func _controls(node) -> Array:
+	var out = []
+	for c in node.get_children():
+		if c is Control:
+			out.append(c)
+		out += _controls(c)
+	return out
 
 func _label(text, big = false):
 	var l = Label.new()
