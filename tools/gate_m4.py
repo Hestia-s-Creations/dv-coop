@@ -9,7 +9,7 @@ Gates 7-9 (Ships track, tim-06) read the COOP: NPC / SHIPS / puppet lines; gates
 Save files are checked separately by tools/savecheck.sh (before/after hashes), which every gate run should include.
 Exit 1 if any selected gate fails.
 """
-import sys, re, glob, os
+import sys, re, glob, os, time
 
 
 class Instance:
@@ -560,6 +560,46 @@ def _secs(line):
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
 
 
+def gateflip(insts):
+    """Flip then kill: a member that briefly took its cell over on warp-in and resigned back is heard when it takes over
+    for real after the authority's hard-kill; the survivors stay in one cell (no late-c.state drops, no orphan leave)."""
+    ev = []
+    flips = [(i, l) for i in insts for l in i.lines if "COOP: CELL dev: authority flip" in l]
+    if not flips:
+        return False, ["FAIL: not staged (--coop-dev-auth-flip=<s> on C)"]
+    fi, fl = flips[0]
+    resigns = [i.name() for i in insts for l in i.lines if re.search(r"COOP: CELL authority %s resigned" % fi.peer, l)]
+    ev.append("%s flipped at %s; its resignation recorded by %s" % (fi.name(), fl.split("]")[1][-8:], resigns or "nobody"))
+    if not resigns:
+        return False, ev + ["FAIL: the flip never reached a resign (nobody stored it), so this run tests nothing"]
+    kills = _kills(insts)
+    if not kills:
+        return False, ev + ["FAIL: no hard-kill recorded (kills.txt): the authority was never killed"]
+    killed, ms = min(kills.items(), key=lambda kv: kv[1])   # the first kill; a phase may kill again later
+    lt = time.localtime(ms / 1000.0)
+    tk = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec
+    survivors = [i for i in insts if str(i.peer) != str(killed) and i.count(r"COOP: CELL (JOINED|FORMED)")]
+    ok = len(survivors) >= 2
+    final = {}
+    for i in survivors:
+        after = [l for l in i.lines if (_secs(l) or 0) >= tk]
+        bad = [l for l in after if (_secs(l) or 0) <= tk + 30 and re.search(
+            r"COOP: CELL (late c\.state from|LEFT cell .*nobody took over)", l)]
+        took = [l for l in after if re.search(r"COOP: CELL (PROMOTED to authority|authority %s -> \d+ in cell)" % killed, l)]
+        st = [re.search(r"COOP: CELL status role=(\w+) auth=(\d+) cid=(\S*)", l) for l in after if (_secs(l) or 0) >= tk + 10]
+        st = [m for m in st if m]
+        final[i.name()] = (st[-1].group(1), st[-1].group(2), st[-1].group(3)) if st else None
+        good = not bad and bool(took)
+        ok = ok and good
+        ev.append("%s: took over: %s; drops: %d%s" % (i.name(), took[0].split("COOP: CELL ")[1][:90] if took else "NO",
+                                                    len(bad), (" (" + bad[0].split("COOP: CELL ")[1][:80] + ")") if bad else ""))
+    one = [f for f in final.values() if f]
+    together = len(one) == len(survivors) and all(f[0] != "SOLO" for f in one) and len({(f[1], f[2]) for f in one}) == 1
+    ok = ok and together
+    ev.append("killed %s; survivors 10 s on: %s -> %s" % (killed, final, "one cell" if together else "SPLIT"))
+    return ok, ev
+
+
 def gate11(insts):
     """Pause in a cell: focus loss, the Steam overlay and the pause key open the menu on one member without pausing
     its game; the cell keeps that player (no silence, handoff or leave) and its ship keeps moving."""
@@ -645,6 +685,7 @@ def gate12(insts):
 
 
 GATES = {
+    "flip": gateflip,
     1: gate1,
     2: gate2,
     "2r": gate2r,
