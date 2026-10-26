@@ -34,7 +34,8 @@ extends Node
 #                              Addlet, a moonlet) 30 km ahead of me, so my spawner makes the oddity (gate 9c).
 #      --coop-dev-return=<s>   s seconds after joining a cell, jump back to where I placed the test POI, which takes
 #                              me out of the cell, so the freed oddity must come back from its POI (gate 9c).
-#      --coop-dev-pause=<s>    s seconds into a cell, drive every pause entry point in turn (window focus loss,
+#      --coop-dev-pause=<s>[,solo]  s seconds into a cell (solo: into my dive, no cell needed), drive every pause
+#                              entry point in turn (window focus loss,
 #                              Steam overlay closed, pause key open and close, overlay open and closed), logging my
 #                              ship's position at each step (gate 11: the cell keeps running).
 #      --coop-dev-menu-quit=<s>,<member|auth>  (repeatable) s seconds into a cell, if my role matches, leave to the
@@ -83,6 +84,9 @@ var pauseClock = 0.0
 var pauseStep = 0
 var pauseKeyUp = -1.0     # release the pause key at this pauseClock (a press and its release in one frame never registers)
 var pauseWasFocused = true
+var pauseSolo = false
+var pauseProbe = null      # logs where a synthetic pause key goes (gate 11 harness check)
+var pauseProbeFrames = 0
 var storyNpc = false
 var storyDone = false
 var storyKept = null
@@ -121,7 +125,9 @@ func _ready():
 			var mq = arg.substr(21).split(",")
 			menuQuits.append([float(mq[0]), mq[1] if mq.size() > 1 else "member"])
 		elif arg.begins_with("--coop-dev-pause="):
-			pauseAfter = float(arg.substr(17))
+			var pa = arg.substr(17).split(",")
+			pauseAfter = float(pa[0])
+			pauseSolo = pa.size() > 1 and pa[1] == "solo"
 		elif arg == "--coop-dev-story-npc":
 			storyNpc = true
 		elif arg.begins_with("--coop-dev-fireall="):
@@ -387,7 +393,7 @@ func _devPauseTick(delta):
 	var cell = _cell()
 	var game = net._gameScene()
 	var ship = net.localShip
-	if cell == null or game == null or not cell.inCell() or ship == null or not is_instance_valid(ship):
+	if cell == null or game == null or (not cell.inCell() and not pauseSolo) or ship == null or not is_instance_valid(ship):
 		return
 	pauseClock += delta
 	if pauseClock < pauseAfter + PAUSE_STEPS[pauseStep][0]:
@@ -406,16 +412,39 @@ func _devPauseTick(delta):
 			# dev windows run in the background, so count this window as focused for the press, as a player's is.
 			pauseWasFocused = Settings.focused
 			Settings.focused = true
-			var ev = InputEventAction.new()
-			ev.action = "pause"
+			_pauseProbe()
+			var ev
+			if pauseStep == 2:
+				ev = InputEventAction.new()
+				ev.action = "pause"
+			else:
+				# the key a player presses: the first key bound to "pause"
+				ev = InputEventKey.new()
+				for e in InputMap.get_action_list("pause"):
+					if e is InputEventKey:
+						ev.scancode = e.scancode
+						break
 			ev.pressed = true
 			Input.parse_input_event(ev)
+			_log("dev pause probe: sent %s; focused was %s; right after parse: pressed=%s just=%s; in physics %s" % [
+				ev.as_text(), pauseWasFocused, Input.is_action_pressed("pause"), Input.is_action_just_pressed("pause"),
+				Engine.is_in_physics_frame()])
+			pauseProbeFrames = 3
 			pauseKeyUp = pauseClock + 0.15
 		4:
 			CurrentGame.emit_signal("pauseGame", true)
 	_log("dev pause step %d: %s; tree paused=%s menu=%s ship at %s" % [pauseStep, step[1], get_tree().paused,
 		menu.get_node("PauseContainer").visible if menu != null else "-", CurrentGame.globalCoords(ship.global_position)])
 	pauseStep += 1
+
+# A probe node that logs every "pause" event it sees in _input and _unhandled_input, and the action state for a few
+# frames after a synthetic press: where the press goes (gate 11 harness check).
+func _pauseProbe():
+	if pauseProbe != null:
+		return
+	pauseProbe = load("res://dv-coop/net/PauseProbe.gd").new()
+	pauseProbe.npc = self
+	add_child(pauseProbe)
 
 func _devMenuQuitTick(delta):
 	if menuQuits.size() == 0 or menuDone:
