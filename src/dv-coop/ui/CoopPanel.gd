@@ -84,7 +84,12 @@ func close():
 
 func _process(delta):
 	if not visible:
+		layoutDue = 0
 		return
+	if layoutDue > 0:
+		layoutDue -= 1
+		if layoutDue == 0 and is_inside_tree():
+			Debug.l("COOP: UI layout %s" % layoutReport())
 	refreshAccum += delta
 	if refreshAccum >= 0.5:
 		refreshAccum = 0.0
@@ -258,15 +263,10 @@ func _refresh():
 
 # After each rebuild, once the containers have sorted, log whether the panel fits: inside the viewport, clear of the
 # stock menu column (if that is showing), and no control smaller than it needs (clipped text).
-var layoutSeq = 0
+var layoutDue = 0   # frames until the next layout report (no yields: the panel can leave the tree with its scene)
 
 func _reportLayoutLater():
-	layoutSeq += 1
-	var seq = layoutSeq
-	for i in range(3):
-		yield(get_tree(), "idle_frame")
-	if seq == layoutSeq and visible:
-		Debug.l("COOP: UI layout %s" % layoutReport())
+	layoutDue = 3
 
 func layoutReport() -> String:
 	var r = get_global_rect()
