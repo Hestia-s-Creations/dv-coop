@@ -268,7 +268,7 @@ var layoutDue = 0   # frames until the next layout report (no yields: the panel 
 var devLayout = null   # dev only: layout reports run with the --coop-dev-ui driver
 
 func _reportLayoutLater():
-	if devLayout == null:
+	if typeof(devLayout) == TYPE_NIL:
 		devLayout = false
 		for arg in OS.get_cmdline_args():
 			if arg.begins_with("--coop-dev-ui"):
