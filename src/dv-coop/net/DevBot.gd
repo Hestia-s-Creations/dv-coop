@@ -430,6 +430,7 @@ func _haulTick():
 					best = id
 					bestD = d
 			if best == "":
+				_seedMinerals(ship, now)   # haul drones take mineral rocks only, which come from class-4 fractures
 				return
 			trial += 1
 			skipIds[best] = true
@@ -545,7 +546,12 @@ func _fracCoordinate(c, now):
 		var n = rs.rocks[id]
 		if not is_instance_valid(n) or n.get("fracturing") == true or not rs.isStreamed(id) or not noArm and n.mass > CLAW_MASS:
 			continue
-		if n.get("asteroidClass") == null or n.asteroidClass >= 4 or n.get("splitEnergyThreshold") == null:
+		if n.get("asteroidClass") == null or n.get("splitEnergyThreshold") == null:
+			continue
+		# the ring spawns rock classes 0-4 only; mineral rocks (class 5) exist only as shards of class-4 rocks
+		# (asteroid.gd: shards are class + obliterating, capped at 5). A salvage arm takes minerals only, so a race
+		# with real arms fractures class-4 rocks; the protocol race (noarm) any class below 4.
+		if (noArm and n.asteroidClass >= 4) or (not noArm and n.asteroidClass != 4):
 			continue
 		if n.get("mineralContent") != null:
 			continue   # the eat bot's (gate 10 may run alongside)
@@ -664,6 +670,52 @@ func _fracMember(now):
 				_aimArm(arm, ship, shard.global_position, shard.linear_velocity)
 			if now > frac.until:
 				_fracEnd(arm, "neither", now, "", "%d shards seen, %d this arm takes" % [frac.seen.size(), frac.takeable.size()])
+
+# Make mineral rocks the way a player does: break a class-4 rock (the ring spawns no minerals; class-4 fracture
+# shards are class 5, the vein's mineral). As a member, claim the nearest class-4 rock and, once it is ours, push it
+# past its split threshold: our stock fracture spawns the shards and Own hands them to the authority (o.new).
+#   COOP: BOT seed id=... claimed / fractured / gave up
+const SEED_EVERY = 6.0
+var seedJob = {"id": "", "until": 0.0, "next": 0.0}
+
+func _seedMinerals(ship, now):
+	var rs = _rs()
+	var own = _own()
+	if seedJob.id != "":
+		var n = rs.nodeOf(seedJob.id)
+		if n == null or n.get("fracturing") == true:
+			seedJob.id = ""
+		elif own.mine.has(seedJob.id):
+			n.totalEnergy = n.splitEnergyThreshold * 1.5
+			n.set_physics_process(true)
+			n.set_process(true)
+			Debug.l("COOP: BOT seed id=%s fractured" % seedJob.id)
+			seedJob.id = ""
+		elif now > seedJob.until:
+			Debug.l("COOP: BOT seed id=%s gave up (not granted)" % seedJob.id)
+			own.untouch(n, "seed")
+			seedJob.id = ""
+		return
+	if now < seedJob.next:
+		return
+	seedJob.next = now + SEED_EVERY
+	var best = ""
+	var bestD = 0.0
+	for id in rs.tracked:
+		var n = rs.tracked[id].n
+		if not is_instance_valid(n) or n.get("asteroidClass") != 4 or n.get("splitEnergyThreshold") == null \
+				or n.get("fracturing") == true or own.owners.has(id):
+			continue
+		var d = n.global_position.distance_to(ship.global_position)
+		if d < 6000.0 and (best == "" or d < bestD):
+			best = id
+			bestD = d
+	if best == "":
+		return
+	seedJob.id = best
+	seedJob.until = now + 3.0
+	Debug.l("COOP: BOT seed id=%s claimed (%.0f px away)" % [best, bestD])
+	own.touch(rs.nodeOf(best), "seed")   # the grant shows up as own.mine on a later tick
 
 # Would the stock arm take this rock? A salvage arm (pickupOnlyMineralTargets) only locks rocks the ship's own
 # mineral filter passes (ship.isValidMineralTarget with the arm's saved config: minerals, min value, albedo); read only.
@@ -945,6 +997,7 @@ func _clawTick():
 				return
 			var id = _pickClawRock(ship)
 			if id == "":
+				_seedMinerals(ship, now)   # a salvage arm takes mineral rocks only: make some
 				return
 			trial += 1
 			claw = {"state": "reach", "id": id, "until": now + CLAW_WAIT, "result": ""}

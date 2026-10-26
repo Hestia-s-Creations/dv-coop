@@ -31,7 +31,9 @@ DIVE_X, DIVE_Y, OFF_B, OFF_C = 150000, 0, 1200, 60000
 BASE = {"DIVE_X": str(DIVE_X), "DIVE_Y": str(DIVE_Y), "OFF_B": str(OFF_B), "WARP_C": "60", "WARP_C_DIST": "900"}
 LOGDIR = {"A": os.path.join(DATA, "dV", "logs"), "B": os.path.join(INST, "dvcoop_instB", "dV", "logs"),
           "C": os.path.join(INST, "dvcoop_instC", "dV", "logs")}
-OFFSET = {"A": "%d,%d" % (DIVE_X, DIVE_Y), "B": "%d,%d" % (DIVE_X, DIVE_Y + OFF_B), "C": "%d,%d" % (DIVE_X, DIVE_Y + OFF_C)}
+# where the arm phases (2r, 3-4) dive; 10r stays at BASE. Any spot works: mineral rocks are never spawned by the ring,
+# only made by breaking class-4 rocks (the bots do that), so this is only a knob for a denser or emptier field.
+ARM_DIVE = {"DIVE_X": os.environ.get("ARM_DIVE_X", str(DIVE_X)), "DIVE_Y": os.environ.get("ARM_DIVE_Y", str(DIVE_Y))}
 FRAC_N = int(os.environ.get("FRAC_N", "30"))   # 12 s an arm trial: 30 fit in the 9-minute limit with the ~2.5 min warm-up
 MPU_N = int(os.environ.get("MPU_N", "5"))
 LIMIT = 9 * 60
@@ -81,6 +83,19 @@ def sh(args, env=None, check=True):
     return r.stdout
 
 
+def at_arm_dive(fn):
+    """Run a phase with BASE moved to ARM_DIVE, then put it back."""
+    def run(*a):
+        saved = dict(BASE)
+        BASE.update(ARM_DIVE)
+        try:
+            return fn(*a)
+        finally:
+            BASE.clear()
+            BASE.update(saved)
+    return run
+
+
 def launch(label, extra):
     log("send the lead: launching 4 windows ~10 min for gate %s" % label)
     sh(["tools/dev3.sh"], dict(BASE, **{"EXTRA_" + k: v for k, v in extra.items()}))
@@ -119,7 +134,10 @@ def kill(inst):
         out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], stdout=subprocess.PIPE, text=True).stdout
     else:
         out = subprocess.run(["pgrep", "-af", "Delta-V"], stdout=subprocess.PIPE, text=True).stdout
-    tok = "--coop-dive-offset=" + OFFSET[inst]
+    # dev3: A dives at (DIVE_X, DIVE_Y), B OFF_B below it, C OFF_C (dev3's default 60000) below it
+    x, y = int(BASE["DIVE_X"]), int(BASE["DIVE_Y"])
+    dy = {"A": 0, "B": int(BASE.get("OFF_B", OFF_B)), "C": OFF_C}[inst]
+    tok = "--coop-dive-offset=%d,%d" % (x, y + dy)
     for row in out.splitlines():
         if tok in row.split():
             pid = row.split()[0]
@@ -147,6 +165,7 @@ def loadout_ok(label, insts, arm=True, mpu=False):
     return False
 
 
+@at_arm_dive
 def phase2():
     arm = "--coop-slot=%s --coop-bot=frac,%d" % (SLOT, FRAC_N)
     launch("2r", {"A": "--coop-bot=frac,%d" % FRAC_N, "B": arm, "C": arm})
@@ -163,6 +182,7 @@ def holding(inst):
     return bool(grep(inst, r"COOP: BOT claw holding id=\S+ .*locked=True mine=True"))
 
 
+@at_arm_dive
 def phase34(attempt):
     # B and C both load the arm save and hold a rock (whichever of them is a member). Gate 4 needs a holder that
     # survives the authority's kill and is not the peer promoted in its place (the next-lowest id), so wait for both
