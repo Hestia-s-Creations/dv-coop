@@ -315,7 +315,8 @@ def gate4(insts):
         if not i.count(r"COOP: CELL PROMOTED"):
             continue
         for line in i.lines:
-            m = re.search(r"COOP: OWN o\.list adopts (\S+) owned by (\d+)", line)
+            # adopts: the new authority learns the hold from o.list; confirms: it already knew (an earlier o.chg)
+            m = re.search(r"COOP: OWN o\.list (?:adopts|confirms) (\S+) owned by (\d+)", line)
             if not m:
                 continue
             t = _ts(line)
@@ -324,7 +325,7 @@ def gate4(insts):
             held = [l for l in (holder[0].lines if holder else []) if rx.search(l) and _ts(l) and _ts(l) >= t]
             good = len(held) > 0
             ok = ok or good
-            ev.append("%s adopted %s held by %s; holder's 'mine=True' lines after that: %d%s" % (
+            ev.append("%s took over %s held by %s; holder's 'mine=True' lines after that: %d%s" % (
                 i.name(), m.group(1), m.group(2), len(held), "" if good else "  FAIL"))
     if not ev:
         ev.append("FAIL: no o.list adoption after a promotion (quit the authority while a member holds a rock)")

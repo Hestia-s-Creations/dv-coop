@@ -810,6 +810,7 @@ func _on_o_list(from, msg):
 		var id = str(it[0])
 		claimed[id] = true
 		if owners.get(id) == from:
+			Debug.l("COOP: OWN o.list confirms %s owned by %s e=%d" % [id, from, epochOf(id)])
 			continue
 		var n = rs.nodeOf(id)
 		if n == null or tomb.has(id) or (owners.has(id) and owners[id] != from):
