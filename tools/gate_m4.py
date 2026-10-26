@@ -227,11 +227,12 @@ def gate1(insts):
     return not bad, ev
 
 
-def gate2(insts):
+def gate2(insts, arm=False):
     """Mid-fracture grab: the claw ends with the rock or with shards, never both, never neither."""
-    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)")]
+    res = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: BOT frac trial=(\d+) .*result=(\S+)(.*)")
+           if not arm or not re.search(r"\((jitter|no )", m.group(3))]   # noarm lines end "(jitter ..)" / "(no ..)"
     if not res:
-        return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N)"]
+        return False, ["FAIL: no fracture-race trials (run with --coop-bot=frac,N%s)" % ("" if arm else "[,noarm]")]
     # shards the authority's fracture actually spawned (the stock fracture can spawn none: each shard gets one
     # placement try); "neither" is only a failure when shards existed
     spawned = {}
@@ -345,7 +346,8 @@ def gate6(insts):
 
 
 def gate10(insts):
-    """Ore audit: every conservation line balances (born - gone = live) and every rock is eaten at most once."""
+    """Ore audit: conservation balances (born - gone = live), every member eat reaches the authority exactly once,
+    and each eat's composition = what the authority handed out minus filler the MPU stripped (minerals unchanged)."""
     lines = [(i.name(), m.group(0)) for i in insts for m in i.grep(r"COOP: OWN conserve .*")]
     if not lines:
         return False, ["FAIL: no conservation lines (the authority logs one every 30 s)"]
@@ -355,10 +357,47 @@ def gate10(insts):
         for m in i.grep(r"COOP: OWN eaten (\S+)"):
             eaten[m.group(1)] = eaten.get(m.group(1), 0) + 1
     twice = [k for k, n in eaten.items() if n > 1]
+    sent = [(i.name(), m.group(1)) for i in insts for m in i.grep(r"COOP: OWN eat (\S+) \((\w+)\)")]
+    lost = [s for s in sent if s[1] not in eaten]
+    audits = [(i.name(), m.group(1), m.group(2)) for i in insts for m in i.grep(r"COOP: OWN eat-audit (\S+) .* (OK|BAD)$")]
+    noaudit = [i.name() + " " + m.group(0) for i in insts for m in i.grep(r"COOP: OWN eat-audit \S+ in=\?.*")]
+    badaudit = [a for a in audits if a[2] != "OK"]
+    stripped = sum(1 for i in insts for m in i.grep(r"COOP: OWN eat-audit \S+ .* processed=\{.+\} OK$"))
     ev = ["%d conservation lines, %d mismatched; last: %s" % (len(lines), len(bad), lines[-1][1][:170])]
     ev.append("rocks eaten: %d, none twice: %s" % (len(eaten), not twice))
+    ev.append("member eats sent %d, reached the authority %d; audited %d (%d with filler stripped), %d bad, %d unaudited" % (
+        len(sent), len(sent) - len(lost), len(audits), stripped, len(badaudit), len(noaudit)))
     ev += ["FAIL %s: %s" % l for l in bad[:5]] + ["FAIL eaten twice: %s" % k for k in twice[:5]]
-    return not bad and not twice, ev
+    ev += ["FAIL eat never reached the authority: %s %s" % s for s in lost[:5]]
+    ev += ["FAIL audit %s %s %s" % a for a in badaudit[:5]] + ["FAIL unaudited: %s" % a for a in noaudit[:5]]
+    if not sent:
+        ev.append("FAIL: no member eats (run --coop-bot=eat,N on a member)")
+    if not stripped:
+        ev.append("FAIL: no eat had anything processed before it (in = out only proves the trivial case)")
+    return bool(sent) and stripped > 0 and not bad and not twice and not lost and not badaudit and not noaudit, ev
+
+
+def gate2r(insts):
+    """Mid-fracture grab with a real salvage arm (dev slot savegame-arm.dv): gate 2 counting arm trials only."""
+    return gate2(insts, arm=True)
+
+
+def gate10r(insts):
+    """Ore audit with a real MPU: gate 10, fed only by the stock MPU (--coop-bot=mpu,N), with at least one rock eaten."""
+    ok, ev = gate10(insts)
+    eaten = sum(i.count(r"COOP: BOT mpu trial=\d+ id=\S+ result=eaten") for i in insts)
+    other = {}
+    for i in insts:
+        for m in i.grep(r"COOP: BOT mpu trial=\d+ id=\S+ result=(\S+)"):
+            other[m.group(1)] = other.get(m.group(1), 0) + 1
+    simulated = sum(i.count(r"COOP: BOT eat trial=") for i in insts)
+    nompu = sum(i.count(r"COOP: BOT mpu: no MPU") for i in insts)
+    ev.append("MPU trials: %s" % (other or "none"))
+    if not eaten:
+        ev.append("FAIL: the stock MPU ate no rock" + (" (no MPU on the bot's ship)" if nompu else ""))
+    if simulated:
+        ev.append("FAIL: %d simulated eat-bot lines; gate 10r is the real MPU only" % simulated)
+    return ok and eaten > 0 and not simulated, ev
 
 
 def _secs(line):
@@ -433,11 +472,13 @@ def gate11b(insts):
 GATES = {
     1: gate1,
     2: gate2,
+    "2r": gate2r,
     3: gate3,
     4: gate4,
     5: gate5,
     6: gate6,
     10: gate10,
+    "10r": gate10r,
     7: gate7,
     8: gate8,
     9: gate9,

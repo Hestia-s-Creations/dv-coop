@@ -49,7 +49,7 @@ func _coopGranted(id):
 	coopWaiting.erase(id)
 	if body == null or not is_instance_valid(body):
 		return
-	var area = get_parent()
+	var area = get_node_or_null("MineralProcessingUnit")   # the intake Area2D is our child (MineralProcessingUnit.tscn)
 	if area != null and area.has_method("overlaps_body") and not area.overlaps_body(body):
 		var own = _coopOwn()
 		if own != null:
