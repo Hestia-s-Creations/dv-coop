@@ -1,13 +1,14 @@
 extends Node
 
 # Fade-in for rocks RockSync builds (child of RockSync). The stock asteroid fades its sprite in over fadeInTime
-# (0.5 s) from _ready, advancing by the frame's delta. RockSync builds a whole snapshot (200-300 rocks) or a stream
-# batch in one frame, so that frame runs long and the next delta alone takes the stock fade to 1: the rocks blip in.
-# Here the fade advances by at most MAX_STEP per frame, and runs after every rock's own _process (process_priority),
-# so the stock code's alpha is overwritten until our ramp reaches 1. Rocks without the stock fade (mineral.gd) are
-# left alone, as in single player.
+# (0.5 s) from _ready, advancing by the frame's delta, so it takes 0.5 s / frame time steps: ~30 at 60 fps, but only
+# 2 in a window running at 4 fps (measured: background dev windows run 200-275 ms frames; a snapshot build frame adds
+# 77-100 ms), which reads as the rock blipping in. Here the fade advances by at most MAX_STEP per frame and runs after
+# every rock's own _process (process_priority), overwriting the stock alpha until the ramp reaches 1: at normal frame
+# rates that is exactly the stock fade, in a slow window it still takes ~5 visible steps. Rocks without the stock fade
+# (mineral.gd) are left alone, as in single player.
 
-const MAX_STEP = 1.0 / 30.0   # s of fade per frame, however long the frame
+const MAX_STEP = 0.1   # s of fade per frame, however long the frame
 const LOG_EVERY = 5.0
 
 var fading = {}   # node -> s of fade so far
