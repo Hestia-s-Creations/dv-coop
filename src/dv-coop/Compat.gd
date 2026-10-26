@@ -111,3 +111,4 @@ func _show():
 	label.anchor_right = 0.85
 	label.margin_top = 24
 	add_child(label)
+	Debug.l("COOP: compat notice shown on the title screen")   # tools/gate_m6.py gate 4 looks for this

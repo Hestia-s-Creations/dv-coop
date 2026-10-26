@@ -61,6 +61,7 @@ src/dv-coop/            what gets zipped; paths inside the zip are res://dv-coop
 tools/build.py          zips src/ -> build/dv-coop.zip, or build/dv-coop-release.zip with --release (reproducible,
                         prints its SHA-256) and copies it into <game>/mods/ as dv-coop.zip
 tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
+tools/gate_m6.py        M6 release gate: verify, --release --strict, reproducible zips, and the build-pin run logs
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
 tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
