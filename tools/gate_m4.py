@@ -469,6 +469,26 @@ def gate11b(insts):
     return ok, ev
 
 
+def gate12(insts):
+    """Friend labels: with friends flying together on one screen, no two friend labels overlap (needs
+    --coop-dev-view on every player and the formation close, e.g. OFF_B=1200 WARP_C_DIST=300)."""
+    ev = []
+    ok = True
+    seen = 0
+    for i in insts:
+        rows = [(int(m.group(1)), int(m.group(2))) for m in i.grep(r"COOP: OVERLAY .* labels=(\d+) overlap=(\d+)")]
+        crowded = [r for r in rows if r[0] >= 2]
+        bad = [r for r in crowded if r[1] > 0]
+        seen += len(crowded)
+        if rows:
+            ev.append("%s: %d view lines, %d with 2+ labels, %d with overlap" % (i.name(), len(rows), len(crowded), len(bad)))
+        if bad:
+            ok = False
+    if seen == 0:
+        return False, ev + ["FAIL: not staged (no view line with 2+ friend labels; use --coop-dev-view and a close formation)"]
+    return ok, ev
+
+
 GATES = {
     1: gate1,
     2: gate2,
@@ -486,6 +506,7 @@ GATES = {
     "9c": gate9c,
     11: gate11,
     "11b": gate11b,
+    12: gate12,
 }
 
 

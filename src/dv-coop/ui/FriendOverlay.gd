@@ -161,7 +161,12 @@ func _logView():
 	var view = inv.basis_xform(size).abs()
 	var cam = CurrentGame.getCurrentCamera()
 	var zoom = cam.zoom.x if cam != null else -1.0
-	Debug.l("COOP: OVERLAY window=%s canvas=%s ui=%s pd=%s zoom=%.2f view=%dx%d far=%d px hud=%d" % [OS.window_size, size, Settings.cfg.ui.scale, Settings.cfg.display.pixelDoubling, zoom, view.x, view.y, far, hudRects.size()])
+	var overlap = 0
+	for i in placed.size():
+		for j in range(i + 1, placed.size()):
+			if placed[i].intersects(placed[j]):
+				overlap += 1
+	Debug.l("COOP: OVERLAY window=%s canvas=%s ui=%s pd=%s zoom=%.2f view=%dx%d far=%d px hud=%d labels=%d overlap=%d" % [OS.window_size, size, Settings.cfg.ui.scale, Settings.cfg.display.pixelDoubling, zoom, view.x, view.y, far, hudRects.size(), placed.size(), overlap])
 
 # The ship displays build their panels from PanelContainers on CanvasLayers; collect the visible ones.
 func _scanHud():
@@ -251,6 +256,18 @@ func _onDraw():
 			if _hitsHud(rect) or rect.end.x > size.x:
 				textPos = screen + Vector2(- RING - 4 - w, asc / 2)
 				rect.position = textPos - Vector2(0, asc)
+			# friends flying together: step the label down (up near the bottom) off the ones already placed, with a
+			# leader line back to its ring
+			var push = Vector2(0, lh) if screen.y < center.y else Vector2(0, - lh)
+			var tries = 0
+			while _collides(rect) and tries < 8:
+				textPos += push
+				rect.position += push
+				tries += 1
+			if tries > 0:
+				var lx = rect.position.x if rect.position.x > screen.x else rect.end.x
+				ctl.draw_line(screen + (Vector2(lx, rect.position.y + lh / 2) - screen).normalized() * RING,
+					Vector2(lx, rect.position.y + lh / 2), Color(col.r, col.g, col.b, 0.5), 1.0)
 			placed.append(rect)
 			ctl.draw_string(font, textPos, label, col)
 			continue
