@@ -65,6 +65,7 @@ tools/gate_m6.py        M6 release gate: verify, --release --strict, reproducibl
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
 tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
+.github/workflows/ci.yml  CI on every pull request: tools/verify.py and the release build
 llms.txt                setup instructions for AI agents
 tools/dvenv.sh          game, data and launcher paths for the dev loops (Windows Git Bash or Linux)
 reference/              decompiled game source (gitignored; regenerate with GDRE Tools, see below)
