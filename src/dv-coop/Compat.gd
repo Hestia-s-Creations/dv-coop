@@ -23,6 +23,7 @@ extends CanvasLayer
 const BUILD = "1.90.12"
 const VERSION_SCENE = "res://VersionLabel.tscn"
 const NOTICE_FONT = "res://hud/NotoMono-Regular.ttf"
+const NOTICE_SCENES = ["res://Boot.tscn", "res://TitleScreen.tscn"]   # where the refusal notice is drawn
 
 var message = ""
 
@@ -87,12 +88,17 @@ func _ready():
 
 func _process(_delta):
 	var c = Loader.current
-	var atTitle = c != null and is_instance_valid(c) and c.filename == "res://TitleScreen.tscn"
+	# the boot splash waits for a key or click before the title, so the notice is up from the first frame
+	var atTitle = c != null and is_instance_valid(c) and c.filename in NOTICE_SCENES
 	if atTitle and not shown:
 		shown = true
 		_show()
 	elif shown and not atTitle:
 		queue_free()   # once is enough; the log keeps the reason
+
+func c_name() -> String:
+	var c = Loader.current
+	return c.filename if c != null and is_instance_valid(c) else "?"
 
 func _show():
 	var font = DynamicFont.new()
@@ -111,4 +117,4 @@ func _show():
 	label.anchor_right = 0.85
 	label.margin_top = 24
 	add_child(label)
-	Debug.l("COOP: compat notice shown on the title screen")   # tools/gate_m6.py gate 4 looks for this
+	Debug.l("COOP: compat notice shown (%s)" % c_name())   # tools/gate_m6.py gate 4 looks for "compat notice shown"

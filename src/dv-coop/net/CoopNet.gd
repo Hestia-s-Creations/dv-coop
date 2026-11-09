@@ -76,6 +76,7 @@ var holdUntil = 0.0       # dev drop: no reconnect before this
 var pendingJoin = null    # {lobby, from, shown}: an outside join request waiting for the player
 var connectLobby = ""     # +connect_lobby from the launch options
 var devName = ""
+var devSteamLoop = false  # --coop-dev-steam-loop: Steam P2P packets to our own id, read back (tools/steamloop.sh)
 const RETRY_STEPS = [1.0, 2.0, 4.0, 8.0, 15.0]
 
 # peers: id -> {name, beacon, beaconAt, cfg, puppet, inRange}
@@ -115,14 +116,19 @@ func _ready():
 		var arg = args[i]
 		if arg == "+connect_lobby" and i + 1 < args.size():
 			connectLobby = args[i + 1]
+		# coop:dev{
 		elif arg.begins_with("--coop-dev-enet="):
 			devEnet = arg.substr(16)
 		elif arg.begins_with("--coop-dev-name="):
 			devName = arg.substr(16)
+		elif arg == "--coop-dev-steam-loop":
+			devSteamLoop = true
+		# coop:dev}
 		elif arg == "--coop-host":
 			wantHost = true
 		elif arg == "--coop-invite":
 			wantInvite = true
+		# coop:dev{
 		elif arg == "--coop-autodive":
 			autoDive = true
 		elif arg.begins_with("--coop-dive-offset="):
@@ -131,6 +137,7 @@ func _ready():
 				autoDiveOffset = Vector2(float(xy[0]), float(xy[1]))
 		elif arg.begins_with("--coop-slot="):
 			CurrentGame.changeSaveSlot("user://" + arg.substr(12))
+		# coop:dev}
 		elif arg.begins_with("--coop-join="):
 			joinLobbyId = int(arg.substr(12))
 		elif arg.begins_with("--coop-enet-host="):
@@ -216,6 +223,10 @@ func _onLobbyCreated(result, lobby):
 	Debug.l("COOP: LOBBY ID %d  (others run: --enable-mods --coop-join=%d)" % [lobbyId, lobbyId])
 	_steamPresence()
 	_inLobby()
+	# coop:dev{
+	if devSteamLoop:
+		_devSteamLoopStart()
+	# coop:dev}
 	if wantInvite:
 		Steam.activateGameOverlayInviteDialog(lobbyId)
 
@@ -948,3 +959,39 @@ func _despawnPuppet(id, why):
 		Debug.l("COOP: despawning puppet of %s (%s)" % [peers[id].name, why])
 		pp.queue_free()
 	peers[id].puppet = null
+
+# coop:dev{
+# ---------------------------------------------------------------- Steam loopback test (M6)
+# --coop-dev-steam-loop with --coop-host: once the lobby exists, send packets to our OWN Steam id over real Steam P2P
+# and read them back through the normal _physics_process receive path. That runs sendP2PPacket,
+# getAvailableP2PPacketSize, readP2PPacket, the sender key this GodotSteam returns, the forged-sender check and the
+# module dispatch on the real Steam transport, with one account. Driven by tools/steamloop.sh, scored by
+# tools/gate_steam.py from the COOP-STEAMLOOP lines.
+const DEVLOOP_N = 20
+var devLoopGot = 0
+var devLoopDone = false
+var devLoopSizes = []
+
+func _devSteamLoopStart():
+	on("devloop", self, "_devLoopRecv")
+	Debug.l("COOP-STEAMLOOP: start, I am %d, session to self before: %s" % [myId, str(Steam.getP2PSessionState(myId))])
+	for i in range(DEVLOOP_N):
+		var pad = PoolByteArray()
+		pad.resize(i * 50)   # 0 .. 950 bytes, so the sizes read back can be checked against the sizes sent
+		_send(myId, {"t": "devloop", "seq": i, "at": OS.get_ticks_msec(), "pad": pad}, i % 2 == 0)
+	Debug.l("COOP-STEAMLOOP: sent %d packets to self (even seq reliable, odd unreliable, 0..950 B padding)" % DEVLOOP_N)
+	get_tree().create_timer(10.0).connect("timeout", self, "_devLoopResult")
+
+func _devLoopRecv(from, msg):
+	devLoopGot += 1
+	devLoopSizes.append(msg.pad.size())
+	Debug.l("COOP-STEAMLOOP: got seq=%d from=%d pad=%d B age=%d ms" % [msg.seq, from, msg.pad.size(), OS.get_ticks_msec() - msg.at])
+	if devLoopGot == DEVLOOP_N:
+		_devLoopResult()
+
+func _devLoopResult():
+	if devLoopDone:
+		return
+	devLoopDone = true
+	Debug.l("COOP-STEAMLOOP: RESULT sent=%d got=%d bytes_in=%d session to self after: %s" % [DEVLOOP_N, devLoopGot, stats.bytes_in, str(Steam.getP2PSessionState(myId))])
+# coop:dev}

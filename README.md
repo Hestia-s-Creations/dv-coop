@@ -1,10 +1,25 @@
 # dv-coop
 
-A work-in-progress co-op mod for ΔV: Rings of Saturn: up to five players, each playing their own game,
-sharing the same rocks whenever they fly near each other. Built for the Steam release (build 1.90.12, Godot 3.6 + GodotSteam).
+A co-op mod for ΔV: Rings of Saturn: up to five players, each playing their own game, sharing the same rocks
+whenever they fly near each other. Built for the Steam release (build 1.90.12, Godot 3.6 + GodotSteam).
 
-**It is not playable yet.** Ships fly together and nearby players share the same asteroids, but mining together,
-combat and the in-game join menu are still to come. See Status below.
+**Release 0.1.0.** Flying together, shared rocks you can shoot, grab, haul and process, mirrored NPCs, and hosting,
+inviting and joining from the game's own menus all work and pass their machine gates (one PC, up to four instances,
+plus a real Steam P2P loopback). What has not happened yet is a session between two Steam accounts on two networks.
+See Status below.
+
+## Play
+
+1. Download `dv-coop.zip` from the [latest release](https://github.com/Hestia-s-Creations/dv-coop/releases) and
+   put it in the game folder's `mods/` (make the folder if it isn't there):
+   `C:\Program Files (x86)\Steam\steamapps\common\dV Rings of Saturn\mods\dv-coop.zip`.
+2. In Steam, right-click the game, Properties, Launch Options: `--enable-mods`.
+3. Start the game. The title screen gets a **Co-op** panel: Host, then invite friends through the Steam overlay,
+   or Join an invite. Everyone picks their own save. Dive to a friend from Enceladus, or plot a course to them in
+   flight.
+
+Everyone needs the same dv-coop release and the game build it was made for (title screen, bottom right).
+If something is off, see [Troubleshooting](#troubleshooting).
 
 - Design spec: [docs/SPEC.md](docs/SPEC.md) ([PDF](docs/SPEC.pdf))
 - Check what's in this repo: [Verify it yourself](#verify-it-yourself)
@@ -39,11 +54,22 @@ combat and the in-game join menu are still to come. See Status below.
   join, and the cell survives its authority quitting (handoff under 1 s) or crashing (1.5 s). Puppets of other
   players' ships take no local damage and never touch your save. Checked at six resolutions from 1280x720 to
   3440x1440 and at the game's UI-scale extremes. Details: [docs/M3.md](docs/M3.md).
-- **M6 polish and release (in progress).** The mod checks the game build and switches itself off with a plain message
-  on any other build; `tools/build.py --release` builds the zip for players without the dev tooling; a game-update
-  runbook ([docs/UPDATING.md](docs/UPDATING.md)) and the troubleshooting section below. Plan: [docs/M6.md](docs/M6.md).
-- Not yet proven: Steam P2P between two different Steam accounts and networks; a human flying into a cell
-  (all M3 testing used dev flags on one PC); HiDPI laptops and Windows display scaling above 100%.
+- **M4 shared rocks you can touch (2026-10-26): gated.** Ownership of rocks between players (claim races, fractures,
+  handoff while holding), beam and bullet damage applied once on the owner, haul drones, the manipulator arm and
+  the processing unit on shared rocks with ore counted once, ship deaths seen by everyone, pirates and story ships
+  mirrored, and the pause menu without freezing anyone. 11 phases plus 3 real-arm phases, four instances on one PC,
+  every save byte-identical before and after. Evidence in PR #29.
+- **M5 joining flows (2026-10-26): gated.** Host, invite and join from the title screen or the pause menu, Steam
+  invites with the game closed or running, dive to a friend from Enceladus (lands within 2.1 km), plot a course to
+  a friend in flight, and rejoin after a drop. Panel layout checked at six resolutions and UI scales.
+  Details: [docs/M5.md](docs/M5.md).
+- **M6 release (2026-11-08): done.** Build pin with a notice on the boot and title screens, `tools/build.py --release
+  --strict` passes (dev code left out of the player zip), reproducible zips, the game-update runbook
+  ([docs/UPDATING.md](docs/UPDATING.md)), and the Steam transport run for real: `tools/steamloop.sh` hosts a Steam
+  lobby and sends packets to our own Steam id over Steam P2P, read back through the normal receive path (20/20, sender
+  key and session state checked). Plan and review: [docs/M6.md](docs/M6.md).
+- Not yet done: a session between two Steam accounts on two networks (lobby join, session request from another
+  account, NAT relay), a long four-player session, and HiDPI or Windows display scaling above 100 %.
 
 ## Layout
 
@@ -62,6 +88,8 @@ tools/build.py          zips src/ -> build/dv-coop.zip, or build/dv-coop-release
                         prints its SHA-256) and copies it into <game>/mods/ as dv-coop.zip
 tools/verify.py         checks the repo against MANIFEST.sha256 and the rules below
 tools/gate_m6.py        M6 release gate: verify, --release --strict, reproducible zips, and the build-pin run logs
+tools/steamloop.sh      Steam transport gate: one game window hosts a Steam lobby and loops packets to its own id
+tools/gate_steam.py     scores a steamloop.sh run: lobby, 20/20 packets back, sender key, sizes, no errors
 tools/spec_pdf.py       renders docs/SPEC.md to docs/SPEC.pdf
 tools/setres.py         dev: per-instance window size and UI scale (RES_A/B/C, UI_A/B/C in dev3)
 MANIFEST.sha256         every file in the repo and its SHA-256
@@ -207,8 +235,9 @@ build you have (title screen, bottom right).
 - Up to five players per lobby. Each plays their own save: money, cargo and story stay yours.
 - Bullet time and pause only work when you're alone.
 - Lobbies are friends-only and peers trust each other's ship data. Play with people you know.
-- Not yet proven: Steam P2P between different accounts and networks, long four-player sessions, and HiDPI screens
-  or Windows display scaling above 100 %. These are the M6 human gates ([docs/M6.md](docs/M6.md)).
+- The Steam transport is proven on one account (lobby, P2P send and receive to self). A session between two Steam
+  accounts on two networks, long four-player sessions, and HiDPI or Windows display scaling above 100 % have not been
+  run yet ([docs/M6.md](docs/M6.md)). If you run one, send the logs.
 
 ## Logs
 

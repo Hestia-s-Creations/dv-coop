@@ -108,6 +108,7 @@ func _ready():
 	net.on("n.d", self, "_onNpcGone")
 	net.on("d.ship", self, "_onShipHits")
 	call_deferred("_hookCell")
+	# coop:dev{
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-dev-explode="):
 			explodeAfter = float(arg.substr(19))
@@ -138,6 +139,7 @@ func _ready():
 		elif arg.begins_with("--coop-dev-explode-member="):
 			explodeAfter = float(arg.substr(26))
 			explodeMemberOnly = true
+	# coop:dev}
 
 func _hookCell():
 	var cell = net.get_node_or_null("Cell")
@@ -442,9 +444,11 @@ func _devPauseTick(delta):
 func _pauseProbe():
 	if pauseProbe != null:
 		return
+	# coop:dev{
 	pauseProbe = load("res://dv-coop/net/PauseProbe.gd").new()
 	pauseProbe.npc = self
 	add_child(pauseProbe)
+	# coop:dev}
 
 func _devMenuQuitTick(delta):
 	if menuQuits.size() == 0 or menuDone:

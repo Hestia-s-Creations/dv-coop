@@ -101,6 +101,7 @@ func _ready():
 	net.on("c.leave", self, "_onLeave")
 	net.on("c.hb", self, "_onHb")
 	net.on("c.ad", self, "_onAd")
+	# coop:dev{
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-warp-to-peer="):
 			var parts = arg.substr(20).split(",")
@@ -111,6 +112,7 @@ func _ready():
 			devSlipEvery = float(arg.substr(22))
 		elif arg.begins_with("--coop-dev-auth-flip="):
 			devFlipAfter = float(arg.substr(21))
+	# coop:dev}
 
 # ---------------------------------------------------------------- interface (docs/M3.md)
 

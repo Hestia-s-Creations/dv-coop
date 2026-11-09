@@ -63,6 +63,7 @@ var dropFor = 0.0
 func _ready():
 	name = "Travel"   # the travel extensions find this module by name
 	net.connect("session_changed", self, "_sessionChanged")
+	# coop:dev{
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-dev-ui="):
 			for step in arg.substr(14).split(","):
@@ -90,6 +91,7 @@ func _ready():
 			var sd = arg.substr(16).split(",")
 			dropAt = float(sd[0])
 			dropFor = float(sd[1]) if sd.size() > 1 else 20.0
+	# coop:dev}
 
 func _log(s):
 	Debug.l("COOP: TRAVEL " + s)
