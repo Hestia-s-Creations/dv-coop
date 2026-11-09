@@ -270,9 +270,11 @@ var devLayout = null   # dev only: layout reports run with the --coop-dev-ui dri
 func _reportLayoutLater():
 	if typeof(devLayout) == TYPE_NIL:
 		devLayout = false
+		# coop:dev{
 		for arg in OS.get_cmdline_args():
 			if arg.begins_with("--coop-dev-ui"):
 				devLayout = true
+		# coop:dev}
 	if devLayout:
 		layoutDue = 3
 

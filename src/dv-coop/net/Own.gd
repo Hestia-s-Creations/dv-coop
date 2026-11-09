@@ -67,6 +67,7 @@ var eatenIds = {}     # id -> true for rocks whose exit is an o.eat (so the exit
 
 func _ready():
 	name = "Own"
+	# coop:dev{
 	for arg in OS.get_cmdline_args():
 		if arg.begins_with("--coop-dev-dmg-delay="):
 			dmgDelay = max(float(arg.substr(21)), 0.0)
@@ -74,6 +75,7 @@ func _ready():
 		elif arg.begins_with("--coop-dev-rel-delay="):
 			relDelay = max(float(arg.substr(21)), 0.0)
 			Debug.l("COOP: OWN dev: o.rel held %.1f s before sending (held-hit staging)" % relDelay)
+	# coop:dev}
 	for t in ["o.req", "o.ok", "o.no", "o.chg", "o.u", "o.rel", "d.ev", "o.list", "o.eat", "o.new", "b.new"]:
 		net.on(t, self, "_on_" + t.replace(".", "_"))
 	connect("denied", self, "_onTimedDenied")

@@ -5,7 +5,7 @@ extends Node
 # ModLoader instantiates this with `packedScript.new(modLoader)` and then add_child()s it.
 
 const MOD_PRIORITY = 0
-const MOD_VERSION = "0.0.1-m0"
+const MOD_VERSION = "0.1.0"
 const Compat = preload("res://dv-coop/Compat.gd")   # the game build pin (Compat.BUILD)
 
 # Order matters: asteroid.gd before AsteroidSpawner.gd, which preloads the asteroid scenes that use asteroid.gd.
